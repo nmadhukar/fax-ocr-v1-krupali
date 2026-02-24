@@ -52,6 +52,7 @@ class ExtractionMethodEnum(str, enum.Enum):
     """Method used for field extraction."""
 
     TEMPLATE_OCR = "TEMPLATE_OCR"   # Label-anchored template extraction
+    OCR_LABEL = "OCR_LABEL"         # Regex/pattern-based OCR label extraction (non-template)
     LAYOUTLM = "LAYOUTLM"           # LayoutLM Document QA model (sole VLM)
     DONUT = "DONUT"                 # READ-ONLY legacy value — Donut removed, do NOT use for new extractions
     VLM = "VLM"                     # Generic VLM fallback

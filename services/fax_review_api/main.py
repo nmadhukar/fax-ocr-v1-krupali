@@ -13,7 +13,7 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from libs.shared.config import get_settings
@@ -85,9 +85,19 @@ def create_app() -> FastAPI:
     app.include_router(analytics.router, prefix="/v1/analytics", tags=["Analytics"])
     app.include_router(models.router, prefix="/v1/models", tags=["Models"])
 
+    # Human UI console (served by Review API)
+    import os
+
+    ui_dir = os.path.join(os.path.dirname(__file__), "ui")
+    if os.path.isdir(ui_dir):
+        app.mount("/ui", StaticFiles(directory=ui_dir, html=True), name="ui")
+
+        @app.get("/", include_in_schema=False)
+        async def root_ui_redirect() -> RedirectResponse:
+            return RedirectResponse(url="/ui/")
+
     # Serve Swagger UI from local static files (no CDN required)
     if settings.api.debug:
-        import os
         static_dir = "/app/static"
         if os.path.isdir(static_dir):
             app.mount("/static", StaticFiles(directory=static_dir), name="static")

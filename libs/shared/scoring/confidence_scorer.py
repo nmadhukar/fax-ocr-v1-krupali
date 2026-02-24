@@ -142,7 +142,7 @@ class ConfidenceScorer:
                 continue
 
             value = field_data.get("value")
-            if not value:
+            if value is None:
                 continue
 
             is_critical = field_key in critical_fields
@@ -276,7 +276,9 @@ class ConfidenceScorer:
                 payer_thresh = self.payer_rules.get_confidence_threshold(
                     payer_name, fs.field_key
                 )
-                min_conf = min(payer_thresh, 0.65)
+                # Use the stricter threshold: payer-specific or default floor,
+                # but cap at 0.65 to avoid over-flagging from overly strict payer configs
+                min_conf = min(max(payer_thresh, min_conf), 0.65)
             if fs.weighted_confidence < min_conf:
                 return True
 
@@ -347,7 +349,7 @@ class ConfidenceScorer:
 
             # Determine field type for canonicalization
             field_type = "text"
-            if field_key.endswith("_date"):
+            if field_key.endswith("_date") or field_key.endswith("_dob"):
                 field_type = "date"
             elif field_key == "member_id":
                 field_type = "member_id"
@@ -356,8 +358,8 @@ class ConfidenceScorer:
                 reason = f"TEMPLATE_VLM_DISAGREE_{field_key}"
                 disagreements.append(reason)
                 logger.warning(
-                    "Agree-to-finalize FAILED for %s: template='%s' vs vlm='%s'",
-                    field_key, t_val, v_val,
+                    "Agree-to-finalize FAILED for %s: template and VLM values disagree",
+                    field_key,
                 )
 
         return disagreements
@@ -443,4 +445,6 @@ class ConfidenceScorer:
             if fs.weighted_confidence < 0.70:
                 reasons.append(f"LOW_CONF_{fs.field_key.upper()}")
 
-        return reasons[:8]
+        if len(reasons) > 8:
+            reasons = reasons[:7] + ["ADDITIONAL_ISSUES_TRUNCATED"]
+        return reasons

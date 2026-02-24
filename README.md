@@ -12,6 +12,7 @@ A production-grade, HIPAA-compliant system for automated extraction of Prior Aut
 | [README_API.md](README_API.md) | Full API reference with request/response schemas |
 | [README_ARCHITECTURE.md](README_ARCHITECTURE.md) | System architecture and pipeline stage descriptions |
 | [README_TECHNICAL.md](README_TECHNICAL.md) | Developer reference: codebase, algorithms, extension guide |
+| [AGENTS.md](AGENTS.md) | Agent rules, subagent skills, repeatable task and validation commands |
 
 ---
 

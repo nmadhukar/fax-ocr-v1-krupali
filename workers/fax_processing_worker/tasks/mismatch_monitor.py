@@ -9,6 +9,7 @@ Metrics are stored in `fax_mismatch_metric` and an audit_log alert
 is inserted when the mismatch rate for any field exceeds the threshold.
 """
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -131,12 +132,13 @@ def aggregate_mismatch_metrics(self) -> dict:
                             ('MISMATCH_ALERT', :data::jsonb)
                     """),
                     {
-                        "data": (
-                            f'{{"payer":"{payer_name}","field":"{field_key}",'
-                            f'"mismatch_rate":{mismatch_rate:.2f},'
-                            f'"mismatch_count":{mismatch_count},'
-                            f'"total_count":{total_count}}}'
-                        ),
+                        "data": json.dumps({
+                            "payer": payer_name,
+                            "field": field_key,
+                            "mismatch_rate": round(mismatch_rate, 2),
+                            "mismatch_count": mismatch_count,
+                            "total_count": total_count,
+                        }),
                     },
                 )
                 logger.warning(

@@ -167,6 +167,10 @@ async def get_current_user(
 
     # No token provided
     if settings.environment == "development":
+        logger.warning(
+            "Auth bypass: returning dev user (ENVIRONMENT=development). "
+            "Set ENVIRONMENT=production for real authentication."
+        )
         request.state.user = _DEV_USER
         return _DEV_USER
 

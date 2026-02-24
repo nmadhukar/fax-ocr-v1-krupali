@@ -24,8 +24,9 @@ __pycache__/
 # Tests (not needed in production image)
 tests/
 
-# Local env files (Docker uses .env.docker)
+# Local env files (Docker uses .env.docker at runtime via env_file, not at build time)
 .env
+.env.docker
 .env.example
 .env.production
 

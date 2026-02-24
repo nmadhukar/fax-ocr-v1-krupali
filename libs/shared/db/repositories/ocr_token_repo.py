@@ -214,7 +214,9 @@ class OcrTokenRepository(BaseRepository[FaxOcrToken]):
         if case_sensitive:
             condition = FaxOcrToken.token_text.contains(text)
         else:
-            condition = FaxOcrToken.token_text.ilike(f"%{text}%")
+            # Escape LIKE special characters to prevent pattern injection
+            escaped = text.replace("%", r"\%").replace("_", r"\_")
+            condition = FaxOcrToken.token_text.ilike(f"%{escaped}%")
 
         stmt = (
             select(FaxOcrToken)

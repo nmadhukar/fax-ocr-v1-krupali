@@ -4,6 +4,7 @@ PaddleOCR client implementation.
 Uses PP-OCRv5 for text detection and recognition.
 """
 
+import threading
 from functools import lru_cache
 from typing import Any
 
@@ -47,33 +48,36 @@ class PaddleOcrClient(OcrClient):
         self.use_angle_cls = (
             use_angle_cls if use_angle_cls is not None else settings.ocr.use_angle_cls
         )
-        self.det_db_thresh = det_db_thresh or settings.ocr.det_db_thresh
-        self.det_db_box_thresh = det_db_box_thresh or settings.ocr.det_db_box_thresh
-        self.rec_batch_num = rec_batch_num or settings.ocr.rec_batch_num
+        self.det_db_thresh = det_db_thresh if det_db_thresh is not None else settings.ocr.det_db_thresh
+        self.det_db_box_thresh = det_db_box_thresh if det_db_box_thresh is not None else settings.ocr.det_db_box_thresh
+        self.rec_batch_num = rec_batch_num if rec_batch_num is not None else settings.ocr.rec_batch_num
 
         self._ocr: Any = None
+        self._ocr_lock = threading.Lock()
 
     @property
     def ocr(self) -> Any:
-        """Lazy-load PaddleOCR instance."""
+        """Lazy-load PaddleOCR instance (thread-safe)."""
         if self._ocr is None:
-            try:
-                from paddleocr import PaddleOCR
+            with self._ocr_lock:
+                if self._ocr is None:
+                    try:
+                        from paddleocr import PaddleOCR
 
-                self._ocr = PaddleOCR(
-                    use_angle_cls=self.use_angle_cls,
-                    lang=self.lang,
-                    use_gpu=self.use_gpu,
-                    show_log=False,
-                    det_db_thresh=self.det_db_thresh,
-                    det_db_box_thresh=self.det_db_box_thresh,
-                    rec_batch_num=self.rec_batch_num,
-                )
-            except ImportError:
-                raise ImportError(
-                    "PaddleOCR is not installed. "
-                    "Please install it with: pip install paddleocr paddlepaddle"
-                )
+                        self._ocr = PaddleOCR(
+                            use_angle_cls=self.use_angle_cls,
+                            lang=self.lang,
+                            use_gpu=self.use_gpu,
+                            show_log=False,
+                            det_db_thresh=self.det_db_thresh,
+                            det_db_box_thresh=self.det_db_box_thresh,
+                            rec_batch_num=self.rec_batch_num,
+                        )
+                    except ImportError:
+                        raise ImportError(
+                            "PaddleOCR is not installed. "
+                            "Please install it with: pip install paddleocr paddlepaddle"
+                        )
         return self._ocr
 
     def extract(
@@ -158,7 +162,15 @@ class PaddleOcrClient(OcrClient):
         # Group detections into lines based on Y position
         detections_with_y: list[tuple[float, Any]] = []
         for detection in ocr_results:
+            # Guard against malformed PaddleOCR entries
+            if detection is None or len(detection) < 2:
+                continue
             points = detection[0]
+            if points is None or len(points) < 4:
+                continue
+            text_conf = detection[1]
+            if text_conf is None or text_conf[0] is None:
+                continue
             y_center = (points[0][1] + points[2][1]) / 2
             detections_with_y.append((y_center, detection))
 

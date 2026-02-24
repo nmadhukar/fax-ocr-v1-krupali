@@ -2,10 +2,11 @@
 Health check endpoints.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -27,7 +28,7 @@ class HealthResponse(BaseModel):
 
 
 @router.get("/health", response_model=HealthResponse)
-def health_check(db: Session = Depends(get_db)) -> HealthResponse:
+def health_check(db: Session = Depends(get_db)) -> JSONResponse:
     """Perform health check."""
     settings = get_settings()
     checks: dict[str, Any] = {}
@@ -51,13 +52,15 @@ def health_check(db: Session = Depends(get_db)) -> HealthResponse:
 
     all_healthy = all(c.get("status") == "healthy" for c in checks.values())
 
-    return HealthResponse(
+    response = HealthResponse(
         status="healthy" if all_healthy else "degraded",
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
         version=settings.app_version,
         service="fax_query_api",
         checks=checks,
     )
+    status_code = 200 if all_healthy else 503
+    return JSONResponse(content=response.model_dump(mode="json"), status_code=status_code)
 
 
 @router.get("/ready")

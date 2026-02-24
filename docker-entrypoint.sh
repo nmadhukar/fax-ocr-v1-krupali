@@ -34,11 +34,17 @@ done
 echo "PostgreSQL is ready!"
 
 # ---- Wait for Redis ----
-REDIS_HOST=$(echo "$REDIS_URL" | sed -E 's|redis://([^:]+):.*|\1|')
-REDIS_PORT=$(echo "$REDIS_URL" | sed -E 's|redis://[^:]+:([0-9]+).*|\1|')
+# REDIS_URL format: redis://[:password@]host:port[/db]
+REDIS_HOST=$(echo "$REDIS_URL" | sed -E 's|redis://(:[^@]+@)?([^:]+):.*|\2|')
+REDIS_PORT=$(echo "$REDIS_URL" | sed -E 's|.*:([0-9]+)(/.*)?$|\1|')
+REDIS_PASS=$(echo "$REDIS_URL" | sed -E 's|redis://:([^@]+)@.*|\1|')
+# If no password in URL, REDIS_PASS will equal the original URL — clear it
+if [ "$REDIS_PASS" = "$REDIS_URL" ]; then REDIS_PASS=""; fi
 echo "Waiting for Redis at ${REDIS_HOST}:${REDIS_PORT}..."
 RETRY=0
-until python -c "import redis; r=redis.Redis(host='${REDIS_HOST}', port=${REDIS_PORT}); r.ping()" 2>/dev/null; do
+REDIS_PY_PASS=""
+if [ -n "$REDIS_PASS" ]; then REDIS_PY_PASS=", password='${REDIS_PASS}'"; fi
+until python -c "import redis; r=redis.Redis(host='${REDIS_HOST}', port=${REDIS_PORT}${REDIS_PY_PASS}); r.ping()" 2>/dev/null; do
     RETRY=$((RETRY + 1))
     if [ "$RETRY" -ge "$MAX_RETRIES" ]; then
         echo "ERROR: Redis not ready after ${MAX_RETRIES} retries"
@@ -93,8 +99,10 @@ if [ "${RUN_MIGRATIONS}" = "true" ]; then
                 fi
             done < "$sql_file"
         else
-            psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
-                -f "$sql_file" 2>/dev/null || true
+            if ! psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
+                -f "$sql_file" 2>&1; then
+                echo "WARNING: Migration $filename may have had errors (non-fatal for idempotent scripts)"
+            fi
         fi
     done
 

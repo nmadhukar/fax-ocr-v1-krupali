@@ -5,7 +5,8 @@ Uses ORB (Oriented FAST and Rotated BRIEF) features with
 FLANN-based matching for robust template matching.
 """
 
-import pickle
+import json
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -13,6 +14,8 @@ import cv2
 import numpy as np
 
 from libs.shared.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -36,7 +39,7 @@ class OrbFeatures:
             (kp.pt, kp.size, kp.angle, kp.response, kp.octave, kp.class_id)
             for kp in self.keypoints
         ]
-        kp_bytes = pickle.dumps(kp_data)
+        kp_bytes = json.dumps(kp_data).encode("utf-8")
 
         # Descriptors can be stored directly as bytes
         desc_bytes = self.descriptors.tobytes() if self.descriptors is not None else None
@@ -64,7 +67,7 @@ class OrbFeatures:
             OrbFeatures instance.
         """
         # Deserialize keypoints
-        kp_data = pickle.loads(kp_bytes)
+        kp_data = json.loads(kp_bytes)
         keypoints = [
             cv2.KeyPoint(
                 x=pt[0], y=pt[1],
@@ -74,11 +77,17 @@ class OrbFeatures:
             for pt, size, angle, response, octave, class_id in kp_data
         ]
 
-        # Deserialize descriptors
-        if desc_bytes is not None:
-            descriptors = np.frombuffer(desc_bytes, dtype=np.uint8)
-            # Reshape to (n_keypoints, 32) - ORB descriptors are 32 bytes each
-            descriptors = descriptors.reshape(-1, 32)
+        # Deserialize descriptors (.copy() to make writable — np.frombuffer is read-only)
+        if desc_bytes is not None and len(desc_bytes) >= 32:
+            descriptors = np.frombuffer(desc_bytes, dtype=np.uint8).copy()
+            # ORB descriptors are 32 bytes each; discard trailing garbage
+            usable = (len(descriptors) // 32) * 32
+            if usable < len(descriptors):
+                logger.warning(
+                    "ORB descriptors truncated: %d bytes not divisible by 32 (dropped %d trailing bytes)",
+                    len(descriptors), len(descriptors) - usable,
+                )
+            descriptors = descriptors[:usable].reshape(-1, 32)
         else:
             descriptors = None
 
@@ -132,9 +141,9 @@ class OrbMatcher:
         """
         settings = get_settings()
 
-        self.n_features = n_features or settings.template.orb_n_features
-        self.min_matches = min_matches or settings.template.orb_min_matches
-        self.lowe_ratio = lowe_ratio or settings.template.lowe_ratio
+        self.n_features = n_features if n_features is not None else settings.template.orb_n_features
+        self.min_matches = min_matches if min_matches is not None else settings.template.orb_min_matches
+        self.lowe_ratio = lowe_ratio if lowe_ratio is not None else settings.template.lowe_ratio
 
         # Initialize ORB detector
         self.orb = cv2.ORB_create(nfeatures=self.n_features)

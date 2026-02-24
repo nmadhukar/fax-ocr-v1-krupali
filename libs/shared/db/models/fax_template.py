@@ -2,7 +2,7 @@
 Template models - Definitions for payer-specific document formats.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
@@ -74,13 +74,13 @@ class FaxTemplate(Base):
 
     # Audit
     created_at: Mapped[datetime] = mapped_column(
-        default=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
         server_default=text("NOW()"),
     )
     updated_at: Mapped[datetime] = mapped_column(
-        default=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
         server_default=text("NOW()"),
-        onupdate=datetime.utcnow,
+        onupdate=lambda: datetime.now(timezone.utc),
     )
     created_by: Mapped[str | None] = mapped_column(String(255), default=None)
 
@@ -171,7 +171,7 @@ class FaxTemplateVersion(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        default=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
         server_default=text("NOW()"),
     )
     activated_at: Mapped[datetime | None] = mapped_column(default=None)
@@ -248,7 +248,7 @@ class FaxTemplateSample(Base):
 
     # Timestamp
     created_at: Mapped[datetime] = mapped_column(
-        default=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
         server_default=text("NOW()"),
     )
 
@@ -365,7 +365,7 @@ class FaxTemplateField(Base):
 
     # Timestamp
     created_at: Mapped[datetime] = mapped_column(
-        default=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
         server_default=text("NOW()"),
     )
 

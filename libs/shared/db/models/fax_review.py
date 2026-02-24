@@ -109,7 +109,7 @@ class FaxReview(Base):
 
     # Timestamp
     created_at: Mapped[datetime] = mapped_column(
-        default=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
         server_default=text("NOW()"),
     )
 
@@ -191,6 +191,8 @@ class FaxReview(Base):
         if not self.is_claimed:
             return False
         if self.claimed_by != reviewer_id:
+            return False
+        if self.is_expired:
             return False
 
         now = datetime.now(timezone.utc)
@@ -280,7 +282,7 @@ class FaxFeedback(Base):
 
     # Audit
     created_at: Mapped[datetime] = mapped_column(
-        default=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
         server_default=text("NOW()"),
     )
     created_by: Mapped[str | None] = mapped_column(

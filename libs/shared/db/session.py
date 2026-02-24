@@ -5,6 +5,7 @@ Provides SQLAlchemy engine and session factory with proper
 connection pooling and transaction handling.
 """
 
+import threading
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
@@ -16,21 +17,28 @@ from sqlalchemy.orm import Session, sessionmaker
 from libs.shared.config import get_settings
 from libs.shared.db.base import Base
 
-# Global engine and session factory
+# Global engine and session factory (thread-safe initialization)
 _engine: Engine | None = None
 _session_factory: sessionmaker[Session] | None = None
+_init_lock = threading.Lock()
 
 
 def get_engine() -> Engine:
     """
-    Get or create the SQLAlchemy engine.
+    Get or create the SQLAlchemy engine (thread-safe).
 
     Returns:
         SQLAlchemy Engine instance.
     """
     global _engine
 
-    if _engine is None:
+    if _engine is not None:
+        return _engine
+
+    with _init_lock:
+        if _engine is not None:
+            return _engine
+
         settings = get_settings()
         _engine = create_engine(
             settings.database.database_url,
@@ -54,14 +62,20 @@ def get_engine() -> Engine:
 
 def get_session_factory() -> sessionmaker[Session]:
     """
-    Get or create the session factory.
+    Get or create the session factory (thread-safe).
 
     Returns:
         SQLAlchemy sessionmaker instance.
     """
     global _session_factory
 
-    if _session_factory is None:
+    if _session_factory is not None:
+        return _session_factory
+
+    with _init_lock:
+        if _session_factory is not None:
+            return _session_factory
+
         engine = get_engine()
         _session_factory = sessionmaker(
             bind=engine,
@@ -89,7 +103,9 @@ def get_db() -> Generator[Session, None, None]:
     session = session_factory()
     try:
         yield session
-        session.commit()
+        # NOTE: No auto-commit here. Route handlers are responsible for
+        # calling db.commit() explicitly.  This avoids double-commit and
+        # keeps transaction boundaries explicit at the API layer.
     except Exception:
         session.rollback()
         raise

@@ -36,8 +36,8 @@ class BoundingBox:
 
     @property
     def area(self) -> float:
-        """Calculate area."""
-        return self.width * self.height
+        """Calculate area (non-negative, even for degenerate boxes)."""
+        return max(0.0, self.width * self.height)
 
     def to_dict(self) -> dict[str, float]:
         """Convert to dictionary."""
@@ -68,6 +68,9 @@ class BoundingBox:
         """
         x_coords = [p[0] for p in points]
         y_coords = [p[1] for p in points]
+
+        if image_width <= 0 or image_height <= 0:
+            return cls(x0=0.0, y0=0.0, x1=0.0, y1=0.0)
 
         return cls(
             x0=min(x_coords) / image_width,

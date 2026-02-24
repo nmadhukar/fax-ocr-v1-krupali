@@ -2,10 +2,8 @@
 Review and feedback repositories.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
-
-from datetime import timedelta
 
 from sqlalchemy import and_, select, update
 from sqlalchemy.orm import Session
@@ -131,13 +129,20 @@ class ReviewRepository(BaseRepository[FaxReview]):
 
         # Build the WHERE condition: review_id matches AND claimed_by
         # is still what we expect (optimistic concurrency check)
-        conditions = [FaxReview.review_id == review_id]
+        conditions = [
+            FaxReview.review_id == review_id,
+            FaxReview.submitted_at == None,  # noqa: E711
+        ]
         if expected_claimed_by is None:
             conditions.append(
                 (FaxReview.claimed_by == None) | (FaxReview.claim_expires_at < now)  # noqa: E711
             )
         else:
             conditions.append(FaxReview.claimed_by == expected_claimed_by)
+            # If trying to take over another reviewer's claim, require it to
+            # still be expired at update time (prevents stale-claim races).
+            if expected_claimed_by != reviewer_id:
+                conditions.append(FaxReview.claim_expires_at < now)
 
         stmt = (
             update(FaxReview)
@@ -170,14 +175,42 @@ class ReviewRepository(BaseRepository[FaxReview]):
         Returns:
             Submitted FaxReview or None if submit failed.
         """
-        review = self.get_by_id(review_id)
-        if not review:
+        now = datetime.now(timezone.utc)
+
+        # Atomic submit guard to prevent stale-claim submissions and races:
+        # - review must still be unsubmitted
+        # - submitter must be the current claimant
+        # - claim must not be expired
+        stmt = (
+            update(FaxReview)
+            .where(
+                FaxReview.review_id == review_id,
+                FaxReview.submitted_at == None,  # noqa: E711
+                FaxReview.claimed_by == user_id,
+                (FaxReview.claim_expires_at == None) | (FaxReview.claim_expires_at > now),  # noqa: E711
+            )
+            .values(
+                submitted_by=user_id,
+                submitted_at=now,
+                corrections=corrections,
+            )
+        )
+        result = self.db.execute(stmt)
+        if result.rowcount <= 0:
+            self.db.flush()
             return None
 
-        if review.submit(user_id, corrections):
+        review = self.get_by_id(review_id)
+        if review is None:
             self.db.flush()
-            return review
-        return None
+            return None
+
+        # Keep timing analytics available for feedback dashboards.
+        if review.claimed_at:
+            review.time_to_submit_seconds = int((now - review.claimed_at).total_seconds())
+
+        self.db.flush()
+        return review
 
     def release_expired_claims(self) -> int:
         """

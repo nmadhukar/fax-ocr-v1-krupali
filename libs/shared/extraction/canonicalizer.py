@@ -96,9 +96,22 @@ class FieldCanonicalizer:
         match = re.search(r"(\d{1,2})[/\-](\d{1,2})[/\-](\d{2,4})", value)
         if match:
             month, day, year = match.groups()
-            # Fix 2-digit year
+            # Fix 2-digit year using a sliding pivot based on current year.
+            # Anything within the past 90 years → 19xx/20xx accordingly;
+            # otherwise assume 2000s.  This avoids the fixed-30 bug that
+            # would misinterpret 2030+ dates as 1930s.
             if len(year) == 2:
-                year = "20" + year if int(year) < 50 else "19" + year
+                current_year = datetime.now().year
+                y = int(year)
+                # Standard 80-year forward window: 2-digit years within
+                # 80 years ahead of now stay in current/next century;
+                # older ones go to the previous century.
+                full = (current_year // 100) * 100 + y
+                if full > current_year + 80:
+                    full -= 100
+                elif full < current_year - 20:
+                    full += 100
+                year = str(full)
             try:
                 parsed = datetime(int(year), int(month), int(day))
                 return parsed.strftime(self.STANDARD_DATE_FORMAT)
@@ -162,22 +175,28 @@ class FieldCanonicalizer:
         Returns:
             Canonicalized member ID.
         """
-        # Default: uppercase, remove spaces and dashes
+        # Default: uppercase, remove spaces
         value = value.upper()
         value = value.replace(" ", "")
-        value = value.replace("-", "")
 
-        # Payer-specific format enforcement
-        if payer_name == "ANTHEM":
+        # Payer-specific format enforcement (case-insensitive matching)
+        payer_upper = (payer_name or "").upper()
+        if payer_upper == "ANTHEM":
             # Anthem member IDs: typically 3 letters + 9 digits (e.g., YAW123456789)
+            # Dashes are not meaningful — strip them
             cleaned = re.sub(r"[^A-Z0-9]", "", value)
             if len(cleaned) >= 12 and cleaned[:3].isalpha() and cleaned[3:].isdigit():
                 value = cleaned
-        elif payer_name == "UNITED_HEALTH":
-            # UHC member IDs: typically 9-11 digits
+        elif payer_upper == "UNITED_HEALTH":
+            # UHC member IDs: typically 9-11 digits — dashes not meaningful
             cleaned = re.sub(r"[^0-9]", "", value)
             if 9 <= len(cleaned) <= 11:
                 value = cleaned
+        else:
+            # For other payers, preserve dashes as they may be semantically
+            # meaningful (e.g., Medicaid dependent suffix "82353822-01").
+            # Only strip truly extraneous whitespace (already done above).
+            pass
 
         return value
 

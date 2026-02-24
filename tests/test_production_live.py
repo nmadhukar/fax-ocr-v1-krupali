@@ -13,6 +13,8 @@ import time
 import uuid
 from pathlib import Path
 
+import pytest
+
 # Force UTF-8 stdout on Windows (prevents charmap codec errors with non-ASCII chars in API output)
 try:
     if hasattr(sys.stdout, "buffer") and sys.stdout.encoding.lower() != "utf-8":
@@ -22,7 +24,13 @@ try:
 except Exception:
     pass
 
-import requests
+if os.getenv("RUN_PRODUCTION_LIVE_TESTS", "").lower() not in {"1", "true", "yes"}:
+    pytest.skip(
+        "Production live tests are disabled. Set RUN_PRODUCTION_LIVE_TESTS=1 to enable.",
+        allow_module_level=True,
+    )
+
+requests = pytest.importorskip("requests")
 
 # ── Base URLs ──────────────────────────────────────────────────────────────
 INGRESS = "http://localhost:8001"

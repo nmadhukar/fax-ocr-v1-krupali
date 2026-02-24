@@ -4,7 +4,7 @@ Model version tracking — tracks ML model versions with promotion history.
 Client requirement: "model_version table (model_type, version_tag, active, metrics_json, promoted_at)"
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -87,7 +87,7 @@ class ModelVersion(Base):
     )
 
     created_at: Mapped[datetime] = mapped_column(
-        default=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
         server_default=text("NOW()"),
     )
 

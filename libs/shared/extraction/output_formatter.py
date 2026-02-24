@@ -42,6 +42,16 @@ _METHOD_DISPLAY: dict[str, str] = {
 }
 
 
+def _safe_float(value: Any) -> float:
+    """Safely convert a confidence value to a rounded float."""
+    if value is None:
+        return 0.0
+    try:
+        return round(float(value), 4)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def format_field(field_data: dict[str, Any]) -> dict[str, Any]:
     """
     Convert a single internal field dict to the client-facing format.
@@ -55,11 +65,13 @@ def format_field(field_data: dict[str, Any]) -> dict[str, Any]:
     value = field_data.get("value")
     confidence = field_data.get("confidence", 0.0)
     method = field_data.get("method", "UNKNOWN")
-    not_present = field_data.get("not_present", False) or not (value or "").strip()
+    not_present = field_data.get("not_present", False) or (
+        value is None or (isinstance(value, str) and not value.strip())
+    )
 
     return {
         "value": None if not_present else value,
-        "confidence": round(float(confidence), 4) if confidence is not None else 0.0,
+        "confidence": _safe_float(confidence),
         "source": _METHOD_DISPLAY.get(method, method),
         "not_present": bool(not_present),
     }
@@ -96,7 +108,7 @@ def format_for_client(extraction_json: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(field_data, dict):
             # Bare scalar value (legacy or fallback) — wrap it
             result[field_key] = {
-                "value": field_data if field_data else None,
+                "value": field_data if field_data is not None else None,
                 "confidence": 0.0,
                 "source": "UNKNOWN",
                 "not_present": field_data is None,
@@ -127,7 +139,7 @@ def format_summary(
     total = len(fields)
     found = sum(1 for f in fields.values() if not f["not_present"])
     not_present_count = total - found
-    flagged_keys = [f["field_key"] for f in (flagged_fields or [])]
+    flagged_keys = [f.get("field_key", "") for f in (flagged_fields or []) if isinstance(f, dict)]
 
     return {
         "fields": fields,

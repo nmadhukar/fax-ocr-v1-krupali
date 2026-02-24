@@ -5,7 +5,7 @@ Each row represents a corrected field value from human review,
 linked to the source page image. Used for LayoutLM fine-tuning.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
@@ -70,7 +70,7 @@ class FaxLabelExample(Base):
     is_verified: Mapped[bool] = mapped_column(Boolean, default=True)
 
     created_at: Mapped[datetime] = mapped_column(
-        default=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
         server_default=text("NOW()"),
     )
     created_by: Mapped[str | None] = mapped_column(String(255), default=None)

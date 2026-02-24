@@ -3,6 +3,7 @@ Review workflow endpoints.
 """
 
 import logging
+import re
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -18,6 +19,7 @@ from libs.shared.db.repositories.extraction_repo import ExtractionRepository
 from libs.shared.db.repositories.fax_job_repo import FaxJobRepository
 from libs.shared.db.repositories.fax_page_repo import FaxPageRepository
 from libs.shared.db.repositories.review_repo import FeedbackRepository, ReviewRepository
+from libs.shared.db.repositories.template_repo import TemplateFieldRepository
 from libs.shared.db.session import get_db
 from libs.shared.security.auth import AuthUser, get_current_user
 from libs.shared.security.audit import get_audit_logger
@@ -26,6 +28,7 @@ from libs.shared.storage.s3_adapter import S3StorageAdapter
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+_FIELD_KEY_RE = re.compile(r"^[a-z0-9_]+$")
 
 
 # Pydantic schemas
@@ -77,7 +80,7 @@ class ReviewPacketResponse(BaseModel):
 class ClaimRequest(BaseModel):
     """Request to claim a review."""
 
-    reviewer_id: str
+    reviewer_id: str | None = None
 
 
 class ClaimResponse(BaseModel):
@@ -100,7 +103,7 @@ class FieldCorrection(BaseModel):
 class SubmitRequest(BaseModel):
     """Request to submit a review."""
 
-    reviewer_id: str
+    reviewer_id: str | None = None
     corrected_fields: list[FieldCorrection]
 
 
@@ -129,6 +132,158 @@ def get_storage() -> S3StorageAdapter:
     return S3StorageAdapter()
 
 
+def _collect_allowed_correction_fields(
+    db: Session,
+    job: Any,
+    extraction: FaxExtraction | None,
+    review_packet: dict[str, Any] | None,
+) -> set[str]:
+    """
+    Build the allowlist of field keys that reviewers may correct.
+
+    Sources:
+      1) Existing extraction_json keys.
+      2) review_packet.extracted_fields keys.
+      3) Matched template field definitions (if available).
+      4) Known OCR-label fallback field keys.
+      5) HITL threshold table keys.
+    """
+    allowed: set[str] = set()
+
+    if extraction and isinstance(extraction.extraction_json, dict):
+        for key in extraction.extraction_json:
+            if isinstance(key, str):
+                k = key.strip().lower()
+                if k:
+                    allowed.add(k)
+
+    if isinstance(review_packet, dict):
+        packet_fields = review_packet.get("extracted_fields")
+        if isinstance(packet_fields, dict):
+            for key in packet_fields:
+                if isinstance(key, str):
+                    k = key.strip().lower()
+                    if k:
+                        allowed.add(k)
+        elif isinstance(packet_fields, list):
+            for item in packet_fields:
+                if isinstance(item, dict):
+                    key = item.get("field_key")
+                    if isinstance(key, str):
+                        k = key.strip().lower()
+                        if k:
+                            allowed.add(k)
+
+    template_version_id = getattr(job, "matched_template_version_id", None)
+    if template_version_id:
+        try:
+            template_fields = TemplateFieldRepository(db).get_by_version(template_version_id)
+            for field in template_fields:
+                if isinstance(field.field_key, str):
+                    k = field.field_key.strip().lower()
+                    if k:
+                        allowed.add(k)
+        except Exception:
+            logger.warning(
+                "Failed to load template fields for correction allowlist [version=%s]",
+                str(template_version_id)[:8],
+                exc_info=True,
+            )
+
+    try:
+        from libs.shared.extraction.ocr_label_extractor import LABEL_ALIASES
+
+        for key in LABEL_ALIASES.keys():
+            k = key.strip().lower()
+            if k:
+                allowed.add(k)
+    except Exception:
+        logger.warning("Failed to load OCR-label field aliases for correction allowlist", exc_info=True)
+
+    try:
+        from libs.shared.extraction.hitl import FIELD_REVIEW_THRESHOLDS
+
+        for key in FIELD_REVIEW_THRESHOLDS.keys():
+            k = key.strip().lower()
+            if k:
+                allowed.add(k)
+    except Exception:
+        logger.warning("Failed to load HITL field thresholds for correction allowlist", exc_info=True)
+
+    return allowed
+
+
+def _normalize_and_validate_corrections(
+    corrected_fields: list[FieldCorrection],
+    allowed_field_keys: set[str],
+) -> list[dict[str, Any]]:
+    """
+    Normalize reviewer corrections and validate keys.
+
+    - field_key is normalized to lowercase snake_case.
+    - duplicate field_key entries are rejected.
+    - keys outside the allowlist are rejected.
+    """
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    invalid: set[str] = set()
+
+    for correction in corrected_fields:
+        field_key = (correction.field_key or "").strip().lower()
+        if not field_key or not _FIELD_KEY_RE.fullmatch(field_key):
+            invalid.add(correction.field_key or "")
+            continue
+
+        if field_key in seen:
+            duplicates.add(field_key)
+            continue
+
+        if field_key not in allowed_field_keys:
+            invalid.add(correction.field_key or field_key)
+            continue
+
+        seen.add(field_key)
+        normalized.append({
+            "field_key": field_key,
+            "corrected_value": correction.corrected_value,
+            "evidence_bbox": correction.evidence_bbox,
+        })
+
+    if duplicates:
+        duplicate_list = ", ".join(sorted(duplicates))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Duplicate corrected field_key values are not allowed: {duplicate_list}",
+        )
+
+    if invalid:
+        invalid_list = ", ".join(sorted(k for k in invalid if k))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid or unsupported field_key values: {invalid_list}",
+        )
+
+    return normalized
+
+
+def _extract_page_number_from_bbox(bbox: dict[str, Any] | None) -> int | None:
+    """Extract page number from bbox metadata if present."""
+    if not isinstance(bbox, dict):
+        return None
+    for key in ("page", "page_number", "page_num"):
+        raw = bbox.get(key)
+        if raw is None:
+            continue
+        try:
+            page_num = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if page_num >= 1:
+            return page_num
+    return None
+
+
 @router.get("/{fax_job_id}/review-packet", response_model=ReviewPacketResponse)
 def get_review_packet(
     http_request: Request,
@@ -150,7 +305,7 @@ def get_review_packet(
 
     # Tenant isolation
     settings = get_settings()
-    if settings.environment == "production" and job.tenant_id != user.tenant_id:
+    if settings.environment != "development" and job.tenant_id != user.tenant_id:
         if not user.is_admin:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -167,13 +322,35 @@ def get_review_packet(
             detail=f"No review found for job: {fax_job_id}",
         )
 
-    # Audit log (PHI access)
+    # Audit log (PHI access) — flush immediately so the audit record persists
+    # even if a subsequent read operation fails (HIPAA compliance).
     audit = get_audit_logger(http_request, db)
     audit.log_read("fax_review", review.review_id, {"fax_job_id": str(fax_job_id)})
+    db.flush()
 
     # Get pages
     page_repo = FaxPageRepository(db)
     pages = page_repo.get_by_job(fax_job_id)
+
+    # Restrict reviewer page payload to the pages selected for this review packet
+    # (important for composite faxes to avoid leaking unrelated pages).
+    selected_page_numbers: set[int] | None = None
+    if review.review_packet and isinstance(review.review_packet, dict):
+        packet_pages = review.review_packet.get("pages")
+        if isinstance(packet_pages, list):
+            selected_page_numbers = set()
+            for item in packet_pages:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    page_num = int(item.get("page_number"))
+                except (TypeError, ValueError):
+                    continue
+                if page_num >= 1:
+                    selected_page_numbers.add(page_num)
+
+    if selected_page_numbers is not None:
+        pages = [p for p in pages if p.page_number in selected_page_numbers]
 
     page_info = []
     for page in pages:
@@ -258,9 +435,17 @@ def claim_review(
     db: Session = Depends(get_db),
 ) -> ClaimResponse:
     """Claim a review for processing (with optimistic locking)."""
+    reviewer_id = user.user_id
+    # Prevent reviewer impersonation: body reviewer_id must match auth user.
+    if request.reviewer_id and request.reviewer_id != reviewer_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="reviewer_id must match authenticated user",
+        )
+
     # Tenant isolation: verify the job belongs to the caller's tenant
     settings = get_settings()
-    if settings.environment == "production":
+    if settings.environment != "development":
         job_repo = FaxJobRepository(db)
         job = job_repo.get_by_id(fax_job_id)
         if job and job.tenant_id != user.tenant_id and not user.is_admin:
@@ -285,7 +470,7 @@ def claim_review(
         )
 
     if review.is_claimed and not review.is_expired:
-        if review.claimed_by != request.reviewer_id:
+        if review.claimed_by != reviewer_id:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Review already claimed by another reviewer",
@@ -293,10 +478,11 @@ def claim_review(
 
     # Optimistic locking: use a conditional UPDATE to prevent race conditions.
     # If two reviewers try to claim simultaneously, only one succeeds.
+    expected_claimed_by = review.claimed_by if (review.is_claimed and not review.is_expired) else None
     claimed = review_repo.claim_review_atomic(
         review_id=review.review_id,
-        reviewer_id=request.reviewer_id,
-        expected_claimed_by=review.claimed_by,
+        reviewer_id=reviewer_id,
+        expected_claimed_by=expected_claimed_by,
     )
 
     if not claimed:
@@ -307,7 +493,7 @@ def claim_review(
 
     # Audit log before commit so claim + audit are in the same transaction
     audit = get_audit_logger(http_request, db)
-    audit.log_review_claim(review.review_id, {"reviewer": request.reviewer_id})
+    audit.log_review_claim(review.review_id, {"reviewer": reviewer_id})
 
     db.commit()
     db.refresh(review)
@@ -329,12 +515,27 @@ def submit_review(
     db: Session = Depends(get_db),
 ) -> SubmitResponse:
     """Submit a completed review with corrections."""
+    reviewer_id = user.user_id
+    # Prevent reviewer impersonation: body reviewer_id must match auth user.
+    if request.reviewer_id and request.reviewer_id != reviewer_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="reviewer_id must match authenticated user",
+        )
+
+    # Load job and enforce tenant isolation.
+    job_repo = FaxJobRepository(db)
+    job = job_repo.get_by_id(fax_job_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Fax job not found: {fax_job_id}",
+        )
+
     # Tenant isolation: verify the job belongs to the caller's tenant
     settings = get_settings()
-    if settings.environment == "production":
-        job_repo_check = FaxJobRepository(db)
-        job_check = job_repo_check.get_by_id(fax_job_id)
-        if job_check and job_check.tenant_id != user.tenant_id and not user.is_admin:
+    if settings.environment != "development":
+        if job.tenant_id != user.tenant_id and not user.is_admin:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Cannot submit a review belonging to another tenant",
@@ -355,61 +556,91 @@ def submit_review(
             detail="Review already submitted",
         )
 
-    if not review.is_claimed or review.claimed_by != request.reviewer_id:
+    if review.is_expired:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Review claim has expired; reclaim review before submitting",
+        )
+
+    if not review.is_claimed or review.claimed_by != reviewer_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Review not claimed by this reviewer",
         )
 
+    extraction_repo = ExtractionRepository(db)
+    extraction = extraction_repo.get_by_job(fax_job_id)
+    normalized_corrections: list[dict[str, Any]] = []
+    if request.corrected_fields:
+        allowed_field_keys = _collect_allowed_correction_fields(
+            db=db,
+            job=job,
+            extraction=extraction,
+            review_packet=review.review_packet,
+        )
+        if not allowed_field_keys:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Unable to validate corrected fields for this review packet",
+            )
+
+        normalized_corrections = _normalize_and_validate_corrections(
+            request.corrected_fields,
+            allowed_field_keys,
+        )
+
     # Store corrections
     corrections = {
-        c.field_key: {
-            "corrected_value": c.corrected_value,
-            "evidence_bbox": c.evidence_bbox,
+        c["field_key"]: {
+            "corrected_value": c["corrected_value"],
+            "evidence_bbox": c["evidence_bbox"],
         }
-        for c in request.corrected_fields
+        for c in normalized_corrections
     }
 
     # Submit the review
-    review_repo.submit_review(review.review_id, request.reviewer_id, corrections)
+    submitted_review = review_repo.submit_review(review.review_id, reviewer_id, corrections)
+    if not submitted_review:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Review submission failed due to concurrent update or expired claim",
+        )
 
     # Audit log
     audit = get_audit_logger(http_request, db)
     audit.log_review_submit(
-        review.review_id,
-        {"reviewer": request.reviewer_id, "corrections_count": len(request.corrected_fields)},
+        submitted_review.review_id,
+        {"reviewer": reviewer_id, "corrections_count": len(normalized_corrections)},
     )
 
     # Create feedback records for training
     feedback_repo = FeedbackRepository(db)
-    extraction_repo = ExtractionRepository(db)
-    extraction = extraction_repo.get_by_job(fax_job_id)
 
-    for correction in request.corrected_fields:
+    for correction in normalized_corrections:
         original_value = None
         if extraction and extraction.extraction_json:
-            field_data = extraction.extraction_json.get(correction.field_key, {})
+            field_data = extraction.extraction_json.get(correction["field_key"], {})
             if isinstance(field_data, dict):
                 original_value = field_data.get("value")
 
         feedback_repo.create_correction(
             fax_job_id=fax_job_id,
-            review_id=review.review_id,
-            field_key=correction.field_key,
+            review_id=submitted_review.review_id,
+            field_key=correction["field_key"],
             original_value=original_value,
-            corrected_value=correction.corrected_value,
-            created_by=request.reviewer_id,
+            corrected_value=correction["corrected_value"],
+            created_by=reviewer_id,
         )
 
     # Apply human corrections back to extraction_json (HITL — conf=1.0, method=HUMAN_REVIEW)
-    if request.corrected_fields:
-        corrections_dict = {c.field_key: c.corrected_value for c in request.corrected_fields}
+    if normalized_corrections:
+        corrections_dict = {c["field_key"]: c["corrected_value"] for c in normalized_corrections}
         extraction_repo.apply_corrections(fax_job_id, corrections_dict)
         logger.info(
             "HITL: applied %d correction(s) to extraction_json [job=%s, reviewer=%s]",
             len(corrections_dict),
             str(fax_job_id)[:8],
-            request.reviewer_id,
+            reviewer_id,
         )
 
     # Write training labels (fax_label_example) for LayoutLM fine-tuning
@@ -417,47 +648,83 @@ def submit_review(
         from libs.shared.db.repositories.label_example_repo import LabelExampleRepository
 
         label_repo = LabelExampleRepository(db)
-        job_repo = FaxJobRepository(db)
-        job = job_repo.get_by_id(fax_job_id)
         page_repo = FaxPageRepository(db)
 
-        if job:
-            pages = page_repo.get_by_job(fax_job_id)
-            page_map = {p.page_number: p for p in pages if not p.is_cover_page}
+        pages = page_repo.get_by_job(fax_job_id)
+        page_map = {p.page_number: p for p in pages if not p.is_cover_page}
+        fallback_page = next(iter(page_map.values()), None) if page_map else None
 
-            for correction in request.corrected_fields:
-                target_page = next(iter(page_map.values()), None) if page_map else None
-                if target_page:
-                    label_repo.create_label(
-                        fax_job_id=fax_job_id,
-                        fax_page_id=target_page.fax_page_id,
-                        field_key=correction.field_key,
-                        ground_truth_value=correction.corrected_value,
-                        page_storage_key=target_page.page_storage_key or "",
-                        ground_truth_bbox=correction.evidence_bbox,
-                        payer_name=job.payer_hint,   # PayerNameEnum
-                        doc_type=job.doc_type,       # DocTypeEnum
-                        source="human_review",
-                        created_by=request.reviewer_id,
-                    )
+        review_page_numbers: list[int] = []
+        if review.review_packet and isinstance(review.review_packet, dict):
+            packet_pages = review.review_packet.get("pages")
+            if isinstance(packet_pages, list):
+                for item in packet_pages:
+                    if not isinstance(item, dict):
+                        continue
+                    try:
+                        pnum = int(item.get("page_number"))
+                    except (TypeError, ValueError):
+                        continue
+                    if pnum in page_map:
+                        review_page_numbers.append(pnum)
+        review_page_fallback = page_map.get(review_page_numbers[0]) if review_page_numbers else None
+
+        for correction in normalized_corrections:
+            target_page = None
+
+            # 1) reviewer-supplied bbox page
+            corr_page = _extract_page_number_from_bbox(correction.get("evidence_bbox"))
+            if corr_page is not None:
+                target_page = page_map.get(corr_page)
+
+            # 2) original extraction bbox page
+            if target_page is None and extraction and extraction.extraction_json:
+                field_data = extraction.extraction_json.get(correction["field_key"], {})
+                if isinstance(field_data, dict):
+                    source_page = _extract_page_number_from_bbox(field_data.get("evidence_bbox"))
+                    if source_page is not None:
+                        target_page = page_map.get(source_page)
+
+            # 3) first selected review page
+            if target_page is None:
+                target_page = review_page_fallback
+
+            # 4) global first non-cover fallback
+            if target_page is None:
+                target_page = fallback_page
+
+            if target_page:
+                label_repo.create_label(
+                    fax_job_id=fax_job_id,
+                    fax_page_id=target_page.fax_page_id,
+                    field_key=correction["field_key"],
+                    ground_truth_value=correction["corrected_value"],
+                    page_storage_key=target_page.page_storage_key or "",
+                    ground_truth_bbox=correction["evidence_bbox"],
+                    payer_name=job.payer_hint,   # PayerNameEnum
+                    doc_type=job.doc_type,       # DocTypeEnum
+                    source="human_review",
+                    created_by=reviewer_id,
+                )
     except Exception:
         logger.warning(
             "Failed to write training labels for job %s", fax_job_id, exc_info=True
         )
 
     # Update job status
-    job_repo = FaxJobRepository(db)
     from libs.shared.db.models.enums import FaxJobStatusEnum
-    job_repo.update_status(fax_job_id, FaxJobStatusEnum.COMPLETED)
+    # Review completion should not rewrite OCR pipeline completion timestamps.
+    job.status = FaxJobStatusEnum.COMPLETED
+    job.needs_review = False
 
     db.commit()
-    db.refresh(review)
+    db.refresh(submitted_review)
 
     return SubmitResponse(
-        review_id=str(review.review_id),
-        submitted_by=review.submitted_by,
-        submitted_at=review.submitted_at,
-        corrections_count=len(request.corrected_fields),
+        review_id=str(submitted_review.review_id),
+        submitted_by=submitted_review.submitted_by,
+        submitted_at=submitted_review.submitted_at,
+        corrections_count=len(normalized_corrections),
     )
 
 
@@ -528,7 +795,12 @@ def release_expired_claims(
     user: AuthUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, int]:
-    """Release all expired claims."""
+    """Release all expired claims (admin only)."""
+    if not getattr(user, "is_admin", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
     review_repo = ReviewRepository(db)
     count = review_repo.release_expired_claims()
     db.commit()

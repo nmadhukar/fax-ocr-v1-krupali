@@ -1,0 +1,51 @@
+version: 1
+project: healthcare-fax-processor
+tasks:
+  - id: VIBE-01
+    name: onboard-and-baseline
+    skill: deep-review
+    commands:
+      - "./scripts/vibe.sh review-fast"
+      - "./scripts/vibe.ps1 review-fast"
+    done_criteria:
+      - "Baseline checks pass"
+      - "Known blockers are documented"
+
+  - id: VIBE-10
+    name: ultra-deep-review
+    skill: deep-review
+    commands:
+      - "./scripts/vibe.sh test-regression"
+      - "./scripts/vibe.ps1 test-regression"
+    done_criteria:
+      - "Findings are severity-ranked"
+      - "Each finding has file reference and concrete impact"
+
+  - id: VIBE-20
+    name: fix-findings
+    skill: fix-and-harden
+    commands:
+      - "./scripts/vibe.sh review-fast"
+      - "./scripts/vibe.ps1 review-fast"
+    done_criteria:
+      - "Fixes are merged into minimal file set"
+      - "Regression tests added or updated"
+
+  - id: VIBE-30
+    name: functional-validation
+    skill: functional-validation
+    commands:
+      - "./scripts/vibe.sh review-full"
+      - "./scripts/vibe.ps1 review-full"
+    done_criteria:
+      - "Validation command list and results recorded"
+
+  - id: VIBE-40
+    name: docs-and-handoff
+    skill: docs-sync
+    commands:
+      - "./scripts/vibe.sh lint"
+      - "./scripts/vibe.ps1 lint"
+    done_criteria:
+      - "Docs updated for behavior changes"
+      - "Handoff includes risks and next steps"

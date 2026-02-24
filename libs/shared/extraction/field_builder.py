@@ -217,8 +217,8 @@ class FieldBuilder:
             value_key = candidate.value.lower().strip() if candidate.value else ""
             agreeing = value_groups.get(value_key, [])
 
-            if len(agreeing) > 1:
-                # Multiple methods agree → strong confidence boost
+            if len(agreeing) > 1 and value_key:
+                # Multiple methods agree on a non-empty value → strong confidence boost
                 # Cap extra bonus so we don't exceed 1.0 before min()
                 extra = min(self.agreement_bonus * (len(agreeing) - 1), 0.40)
                 score += extra
@@ -385,7 +385,7 @@ _FIELD_MAX_WORDS: dict[str, int] = {
     "service_code": 3,
     "provider_npi": 1,
     "units_requested": 3,
-    "diagnosis_code": 3,
+    "diagnosis_codes": 3,
 }
 
 

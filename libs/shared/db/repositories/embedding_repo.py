@@ -20,6 +20,16 @@ class EmbeddingRepository:
     def __init__(self, db: Session) -> None:
         self.db = db
 
+    @staticmethod
+    def _vector_to_str(embedding: list[float]) -> str:
+        """Convert embedding to pgvector string, validating element types."""
+        for i, v in enumerate(embedding):
+            if not isinstance(v, (int, float)):
+                raise TypeError(
+                    f"Embedding element {i} is {type(v).__name__}, expected numeric"
+                )
+        return "[" + ",".join(str(v) for v in embedding) + "]"
+
     def insert_embedding(
         self,
         fax_job_id: UUID,
@@ -35,7 +45,7 @@ class EmbeddingRepository:
         Returns:
             The generated embedding_id.
         """
-        embedding_str = "[" + ",".join(str(v) for v in embedding) + "]"
+        embedding_str = self._vector_to_str(embedding)
 
         result = self.db.execute(
             text("""
@@ -76,9 +86,18 @@ class EmbeddingRepository:
         if not rows:
             return 0
 
+        params = []
         for row in rows:
             vec = row["embedding"]
-            row["embedding_str"] = "[" + ",".join(str(v) for v in vec) + "]"
+            params.append({
+                "fax_job_id": str(row["fax_job_id"]),
+                "fax_page_id": str(row["fax_page_id"]) if row.get("fax_page_id") else None,
+                "embedding_str": self._vector_to_str(vec),
+                "source_text": row["source_text"],
+                "source_type": row.get("source_type", "page_text"),
+                "chunk_index": row.get("chunk_index", 0),
+                "token_count": row.get("token_count"),
+            })
 
         self.db.execute(
             text("""
@@ -89,18 +108,7 @@ class EmbeddingRepository:
                     (:fax_job_id, :fax_page_id, :embedding_str::vector,
                      :source_text, :source_type, :chunk_index, :token_count)
             """),
-            [
-                {
-                    "fax_job_id": str(r["fax_job_id"]),
-                    "fax_page_id": str(r["fax_page_id"]) if r.get("fax_page_id") else None,
-                    "embedding_str": r["embedding_str"],
-                    "source_text": r["source_text"],
-                    "source_type": r.get("source_type", "page_text"),
-                    "chunk_index": r.get("chunk_index", 0),
-                    "token_count": r.get("token_count"),
-                }
-                for r in rows
-            ],
+            params,
         )
         return len(rows)
 
@@ -109,6 +117,7 @@ class EmbeddingRepository:
         query_embedding: list[float],
         limit: int = 10,
         fax_job_id: UUID | None = None,
+        tenant_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Find most similar embeddings using cosine distance.
 
@@ -116,12 +125,13 @@ class EmbeddingRepository:
             query_embedding: 384-dim query vector.
             limit: Max results.
             fax_job_id: Optional filter by job.
+            tenant_id: Required for cross-job searches to enforce tenant isolation.
 
         Returns:
             List of dicts with embedding_id, fax_job_id, fax_page_id,
             source_text, source_type, chunk_index, similarity_score.
         """
-        vec_str = "[" + ",".join(str(v) for v in query_embedding) + "]"
+        vec_str = self._vector_to_str(query_embedding)
 
         if fax_job_id:
             sql = text("""
@@ -135,17 +145,24 @@ class EmbeddingRepository:
                 LIMIT :limit
             """)
             params = {"query_vec": vec_str, "job_id": str(fax_job_id), "limit": limit}
-        else:
+        elif tenant_id:
             sql = text("""
                 SELECT
-                    embedding_id, fax_job_id, fax_page_id,
-                    source_text, source_type, chunk_index,
-                    1 - (embedding <=> :query_vec::vector) AS similarity_score
-                FROM fax_embedding
-                ORDER BY embedding <=> :query_vec::vector
+                    e.embedding_id, e.fax_job_id, e.fax_page_id,
+                    e.source_text, e.source_type, e.chunk_index,
+                    1 - (e.embedding <=> :query_vec::vector) AS similarity_score
+                FROM fax_embedding e
+                JOIN fax_job j ON j.fax_job_id = e.fax_job_id
+                WHERE j.tenant_id = :tenant_id
+                ORDER BY e.embedding <=> :query_vec::vector
                 LIMIT :limit
             """)
-            params = {"query_vec": vec_str, "limit": limit}
+            params = {"query_vec": vec_str, "tenant_id": tenant_id, "limit": limit}
+        else:
+            raise ValueError(
+                "cosine_search requires either fax_job_id or tenant_id "
+                "to enforce tenant isolation"
+            )
 
         result = self.db.execute(sql, params)
         rows = result.fetchall()

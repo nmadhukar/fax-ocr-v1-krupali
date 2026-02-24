@@ -4,7 +4,8 @@ SQLAlchemy declarative base and common utilities.
 Uses SQLAlchemy 2.0 patterns with type annotations.
 """
 
-from datetime import datetime
+import enum
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -73,6 +74,8 @@ class Base(DeclarativeBase):
                     value = value.isoformat()
                 elif isinstance(value, UUID):
                     value = str(value)
+                elif isinstance(value, enum.Enum):
+                    value = value.value
                 result[column.name] = value
         return result
 
@@ -87,7 +90,7 @@ class TimestampMixin:
     """Mixin for created_at timestamp."""
 
     created_at: Mapped[datetime] = mapped_column(
-        default=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
         server_default=text("NOW()"),
     )
 
@@ -96,7 +99,7 @@ class UpdateTimestampMixin(TimestampMixin):
     """Mixin for created_at and updated_at timestamps."""
 
     updated_at: Mapped[datetime] = mapped_column(
-        default=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
         server_default=text("NOW()"),
-        onupdate=datetime.utcnow,
+        onupdate=lambda: datetime.now(timezone.utc),
     )

@@ -129,12 +129,12 @@ class FieldValidator:
         if payer_name:
             return self.payer_rules.is_critical_field(payer_name, field_key)
 
-        # Default critical fields
+        # Default critical fields (aligned with hitl.py _CRITICAL_FIELDS)
         critical_fields = [
             "member_id",
             "prior_auth_number",
             "patient_name",
-            "date_of_birth",
+            "patient_dob",
         ]
         return field_key in critical_fields
 
@@ -185,7 +185,7 @@ class FieldValidator:
 
         if "date" in key_lower or "dob" in key_lower:
             return "date"
-        elif "phone" in key_lower or "fax" in key_lower:
+        elif "phone" in key_lower or key_lower in ("fax_number", "fax_phone", "provider_fax") or re.search(r"(?:^|_)fax$", key_lower):
             return "phone"
         elif "ssn" in key_lower or "social" in key_lower:
             return "ssn"
@@ -263,13 +263,14 @@ class FieldValidator:
 
         if len(digits) != 9:
             errors.append(f"SSN must be 9 digits: '{value}'")
-        elif digits[0:3] == "000" or digits[3:5] == "00" or digits[5:9] == "0000":
+        elif (digits[0:3] == "000" or digits[3:5] == "00" or digits[5:9] == "0000"
+              or digits[0:3] == "666" or digits[0] == "9"):
             errors.append(f"Invalid SSN format: '{value}'")
 
         return {"errors": errors}
 
     def _validate_npi(self, value: str) -> dict[str, Any]:
-        """Validate NPI using Luhn algorithm."""
+        """Validate NPI using CMS Luhn algorithm (80840 prefix)."""
         errors = []
 
         digits = re.sub(r"\D", "", value)
@@ -278,8 +279,9 @@ class FieldValidator:
             errors.append(f"NPI must be 10 digits: '{value}'")
             return {"errors": errors}
 
-        # Luhn check digit validation
-        if not self._luhn_check(digits):
+        # CMS NPI spec: prefix with "80840" before applying Luhn check
+        # See: https://www.cms.gov/Regulations-and-Guidance/Administrative-Simplification/NationalProvIdentStand
+        if not self._luhn_check("80840" + digits):
             errors.append(f"Invalid NPI check digit: '{value}'")
 
         return {"errors": errors}

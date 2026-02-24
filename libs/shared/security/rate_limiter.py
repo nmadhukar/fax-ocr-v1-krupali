@@ -11,7 +11,6 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections import defaultdict
 from threading import Lock
 
 from fastapi import HTTPException, Request, status
@@ -28,6 +27,9 @@ class RateLimiter:
         burst: Maximum burst size (instant requests before throttling).
     """
 
+    # Hard cap on bucket entries to prevent memory exhaustion from IP spoofing
+    MAX_BUCKETS = 50_000
+
     def __init__(
         self,
         requests_per_minute: int = 60,
@@ -39,7 +41,18 @@ class RateLimiter:
         self._lock = Lock()
 
     def _get_client_ip(self, request: Request) -> str:
-        """Extract client IP from request."""
+        """Extract client IP from request.
+
+        NOTE: X-Forwarded-For is only trustworthy behind a reverse proxy
+        that strips/overwrites this header.  In production, configure
+        your load balancer to set a trusted header (e.g. X-Real-IP).
+        """
+        # Prefer direct peer IP to prevent spoofing; fall back to XFF
+        # only when the direct peer is a loopback (likely a local proxy).
+        if request.client:
+            peer = request.client.host
+            if peer not in ("127.0.0.1", "::1"):
+                return peer
         forwarded = request.headers.get("x-forwarded-for")
         if forwarded:
             return forwarded.split(",")[0].strip()
@@ -67,6 +80,13 @@ class RateLimiter:
                 elapsed = now - last_time
                 tokens = min(self.burst, tokens + elapsed * self.rate)
             else:
+                # Enforce memory cap: reject new IPs when at capacity
+                if len(self._buckets) >= self.MAX_BUCKETS:
+                    raise HTTPException(
+                        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                        detail="Rate limit exceeded. Please try again later.",
+                        headers={"Retry-After": "60"},
+                    )
                 tokens = float(self.burst)
 
             if tokens < 1.0:
@@ -101,14 +121,24 @@ _upload_limiter = RateLimiter(requests_per_minute=30, burst=5)
 _api_limiter = RateLimiter(requests_per_minute=120, burst=20)
 
 
+_cleanup_started = False
+_cleanup_guard = Lock()
+
+
 def _start_cleanup_thread(interval_seconds: float = 300.0) -> None:
     """
     Start a background daemon thread that periodically removes stale buckets.
 
     Runs every `interval_seconds` (default 5 min).  Daemon threads are
     automatically killed when the main process exits, so no explicit
-    shutdown is required.
+    shutdown is required.  Guarded so only one thread is ever created.
     """
+    global _cleanup_started
+    with _cleanup_guard:
+        if _cleanup_started:
+            return
+        _cleanup_started = True
+
     def _cleanup_loop() -> None:
         while True:
             time.sleep(interval_seconds)

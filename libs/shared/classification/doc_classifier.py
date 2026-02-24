@@ -131,6 +131,30 @@ _DOC_TYPE_PATTERNS: dict[str, dict[str, list[str]]] = {
         ],
         "negative": [],
     },
+    "CLINICAL_NOTES": {
+        "strong": [
+            r"(?i)(?:clinical|progress|physician|nursing)\s+notes?",
+            r"(?i)(?:history\s+(?:and|&)\s+physical|H\s*&\s*P)\b",
+            r"(?i)(?:discharge|admission)\s+summary",
+            r"(?i)consultation\s+(?:report|note)",
+            r"(?i)(?:operative|procedure)\s+(?:report|note)",
+            r"(?i)(?:radiology|pathology|lab(?:oratory)?)\s+report",
+            r"(?i)(?:assessment\s+(?:and|&)\s+plan|A\s*&\s*P)\b",
+            r"(?i)(?:chief\s+complaint|subjective|objective|impression)",
+        ],
+        "weak": [
+            r"(?i)\bvital\s+signs\b",
+            r"(?i)\ballergies\b.*\b(?:NKDA|none)\b",
+            r"(?i)\bmedication\s+list\b",
+            r"(?i)\bfollow[\s-]+up\b",
+            r"(?i)\bdiagnos(?:is|es)\b",
+        ],
+        "negative": [
+            r"(?i)authorization\s+(?:has\s+been\s+)?(?:approved|denied)",
+            r"(?i)(?:prior\s+)?auth(?:orization)?\s+(?:is\s+)?(?:approved|denied)",
+            r"(?i)(?:denial|approval)\s+(?:notification|notice|letter)",
+        ],
+    },
 }
 
 # Map internal keys → DocTypeEnum values
@@ -223,11 +247,11 @@ class DocClassifier:
             score = 0.0
             evidence: list[str] = []
 
-            # Negative indicators → skip this type entirely
-            if any(re.search(p, ocr_text) for p in patterns.get("negative", [])):
-                scores[type_key] = 0.0
-                evidence_map[type_key] = []
-                continue
+            # Negative indicators → penalize heavily instead of hard-blocking.
+            # Hard-blocking (continue) causes misclassification when a
+            # document contains both positive and negative phrases.
+            neg_hits = sum(1 for p in patterns.get("negative", []) if re.search(p, ocr_text))
+            neg_penalty = neg_hits * 0.40
 
             # Strong indicators
             strong_hits = 0
@@ -245,13 +269,18 @@ class DocClassifier:
             )
             score += min(weak_hits * 0.05, 0.15)
 
+            # Apply negative penalty (can drive score to zero)
+            score = max(score - neg_penalty, 0.0)
+
             scores[type_key] = score
             evidence_map[type_key] = evidence
 
-        if not scores or max(scores.values()) == 0:
+        # Minimum score threshold: scores below 0.15 are too weak to classify
+        _MIN_CLASSIFY_SCORE = 0.15
+        if not scores or max(scores.values()) < _MIN_CLASSIFY_SCORE:
             return DocClassificationResult(
                 doc_type=DocTypeEnum.UNKNOWN,
-                confidence=0.0,
+                confidence=max(scores.values()) if scores else 0.0,
                 method="keyword",
                 evidence=[],
                 all_scores=scores,

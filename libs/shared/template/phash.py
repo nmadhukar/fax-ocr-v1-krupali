@@ -47,7 +47,13 @@ class PerceptualHasher:
 
         # Convert to PIL Image if needed
         if isinstance(image, np.ndarray):
-            pil_image = Image.fromarray(image)
+            # OpenCV uses BGR; PIL expects RGB
+            import cv2
+            if len(image.shape) == 3 and image.shape[2] == 3:
+                rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            else:
+                rgb = image
+            pil_image = Image.fromarray(rgb)
         else:
             pil_image = image
 
@@ -67,8 +73,8 @@ class PerceptualHasher:
         Returns:
             Integer hash value.
         """
-        pil_image = Image.open(file_path)
-        return self.compute_hash(pil_image)
+        with Image.open(file_path) as pil_image:
+            return self.compute_hash(pil_image)
 
     def compute_hash_from_bytes(self, data: bytes) -> int:
         """

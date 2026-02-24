@@ -8,6 +8,7 @@ Checks logical relationships between extracted fields:
 """
 
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
@@ -62,6 +63,7 @@ class CrossFieldValidator:
         # Intelligence checks
         self._check_units_ne_member_id(fields, result)
         self._check_next_review_ne_dob(fields, result)
+        self._check_auth_dates_ne_dob(fields, result)
         self._check_vlm_date_confusion(fields, result)
         self._check_prior_auth_not_prose(fields, result)
 
@@ -99,6 +101,16 @@ class CrossFieldValidator:
         eff_date = self._parse_date(eff_str)
         exp_date = self._parse_date(exp_str)
 
+        # Flag unparseable dates when values exist but can't be parsed
+        if eff_str and eff_date is None:
+            result.warnings.append(
+                f"auth_effective_date ('{eff_str}') could not be parsed as a valid date"
+            )
+        if exp_str and exp_date is None:
+            result.warnings.append(
+                f"auth_expiration_date ('{exp_str}') could not be parsed as a valid date"
+            )
+
         if eff_date and exp_date:
             if exp_date < eff_date:
                 result.errors.append(
@@ -115,26 +127,19 @@ class CrossFieldValidator:
         fields: dict[str, dict[str, Any]],
         result: CrossFieldResult,
     ) -> None:
-        """If DENIED, denial_reason should exist. If APPROVED, units may exist."""
+        """If APPROVED, units_requested should exist."""
         decision = self._get_value(fields, "decision")
         if not decision:
             return
 
         decision_upper = decision.upper().strip()
 
-        if decision_upper == "DENIED":
-            denial_reason = self._get_value(fields, "denial_reason")
-            if not denial_reason:
-                result.warnings.append(
-                    "Decision is DENIED but no denial_reason was extracted"
-                )
-
-        elif decision_upper == "APPROVED":
-            # Units approved is nice to have but not required
-            units = self._get_value(fields, "units_approved")
+        if decision_upper == "APPROVED":
+            # units_requested is nice to have but not required
+            units = self._get_value(fields, "units_requested")
             if not units:
                 result.warnings.append(
-                    "Decision is APPROVED but no units_approved was extracted"
+                    "Decision is APPROVED but no units_requested was extracted"
                 )
 
     def _check_dob_in_past(
@@ -165,7 +170,7 @@ class CrossFieldValidator:
 
         # Split by comma, semicolon, or space
         codes = re.split(r"[,;\s]+", codes_str)
-        icd10_pattern = re.compile(r"^[A-Z]\d{2}(\.\d{1,4})?$", re.IGNORECASE)
+        icd10_pattern = re.compile(r"^[A-Z]\d{2}(\.[A-Za-z0-9]{1,4})?$", re.IGNORECASE)
 
         for code in codes:
             code = code.strip()
@@ -234,6 +239,26 @@ class CrossFieldValidator:
                 "VLM returned DOB for review date"
             )
 
+    def _check_auth_dates_ne_dob(
+        self,
+        fields: dict[str, dict[str, Any]],
+        result: CrossFieldResult,
+    ) -> None:
+        """auth_effective_date / auth_expiration_date should never equal patient_dob."""
+        dob = self._get_value(fields, "patient_dob")
+        if not dob:
+            return
+        dob_norm = re.sub(r"\D", "", dob)
+        if not dob_norm:
+            return
+        for fk in ("auth_effective_date", "auth_expiration_date"):
+            val = self._get_value(fields, fk)
+            if val and re.sub(r"\D", "", val) == dob_norm:
+                result.errors.append(
+                    f"{fk} ('{val}') equals patient_dob — "
+                    "VLM likely returned DOB for auth date"
+                )
+
     def _check_vlm_date_confusion(
         self,
         fields: dict[str, dict[str, Any]],
@@ -248,10 +273,15 @@ class CrossFieldValidator:
         for fk in date_fields:
             v = self._get_value(fields, fk)
             if v:
-                date_values.append(re.sub(r"\D", "", v))  # digits only
+                # Canonicalize to YYYYMMDD so different formats compare equal
+                parsed = self._parse_date(v)
+                if parsed:
+                    date_values.append(parsed.isoformat())  # YYYY-MM-DD
+                else:
+                    # Fallback to digits-only for unparseable dates
+                    date_values.append(re.sub(r"\D", "", v))
 
         # Count unique normalized values
-        from collections import Counter
         counts = Counter(date_values)
         for norm_val, cnt in counts.items():
             if cnt >= 3 and norm_val:

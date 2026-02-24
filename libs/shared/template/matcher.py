@@ -76,9 +76,9 @@ class TemplateMatcher:
         """
         settings = get_settings()
 
-        self.phash_threshold = phash_threshold or settings.template.phash_threshold
-        self.orb_min_matches = orb_min_matches or settings.template.orb_min_matches
-        self.min_score = min_score or settings.template.match_min_score
+        self.phash_threshold = phash_threshold if phash_threshold is not None else settings.template.phash_threshold
+        self.orb_min_matches = orb_min_matches if orb_min_matches is not None else settings.template.orb_min_matches
+        self.min_score = min_score if min_score is not None else settings.template.match_min_score
 
         self.hasher = PerceptualHasher()
         self.orb_matcher = OrbMatcher(min_matches=self.orb_min_matches)
@@ -152,12 +152,17 @@ class TemplateMatcher:
                     sample.height_px,
                 )
 
+                # Skip corrupted/empty features
+                if not template_orb.keypoints or template_orb.descriptors is None:
+                    continue
+
                 # Match ORB features
                 orb_result = self.orb_matcher.match(query_orb, template_orb)
 
                 # Calculate combined score
                 # Weight: 70% ORB, 30% pHash
-                phash_score = 1.0 - (phash_dist / (self.phash_threshold * 2))
+                phash_denom = self.phash_threshold * 2 if self.phash_threshold > 0 else 1
+                phash_score = 1.0 - (phash_dist / phash_denom)
                 combined_score = 0.7 * orb_result.score + 0.3 * max(phash_score, 0)
 
                 # Check minimum thresholds
@@ -388,7 +393,8 @@ class TemplateMatcher:
                 orb_result = self.orb_matcher.match(query_orb, template_orb)
 
                 base_threshold = version.match_phash_threshold or self.phash_threshold
-                phash_score = 1.0 - (phash_dist / (base_threshold * 2))
+                phash_denom = base_threshold * 2 if base_threshold > 0 else 1
+                phash_score = 1.0 - (phash_dist / phash_denom)
                 combined_score = 0.7 * orb_result.score + 0.3 * max(phash_score, 0)
 
                 min_score = float(version.match_min_score or self.min_score) + score_boost

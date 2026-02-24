@@ -28,12 +28,14 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
 
-# Use D:\temp for temporary files if C: is low on space
-if os.path.exists("D:\\temp"):
-    os.environ["TEMP"] = "D:\\temp"
-    os.environ["TMP"] = "D:\\temp"
+# Use D:\temp for temporary files if available (Windows: C: may be low on space)
+# On Linux/macOS this block is safely skipped.
+_alt_tmp = os.environ.get("SEED_TEMP_DIR", "D:\\temp")
+if os.path.isdir(_alt_tmp):
+    os.environ["TEMP"] = _alt_tmp
+    os.environ["TMP"] = _alt_tmp
     import tempfile
-    tempfile.tempdir = "D:\\temp"
+    tempfile.tempdir = _alt_tmp
 
 import cv2
 import numpy as np
@@ -42,11 +44,21 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# Must set minimal env before importing settings
-os.environ.setdefault("DATABASE_URL", "postgresql+psycopg2://faxadmin:faxpass123@127.0.0.1:5432/fax_processor")
+# Load .env file if present (avoids hardcoding credentials in source)
+_env_path = PROJECT_ROOT / ".env"
+if _env_path.exists():
+    with open(_env_path) as _ef:
+        for _line in _ef:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _key, _, _val = _line.partition("=")
+                os.environ.setdefault(_key.strip(), _val.strip())
+
+# Fallback defaults (non-sensitive) when .env is missing
 os.environ.setdefault("MINIO_ENDPOINT", "localhost:9000")
-os.environ.setdefault("MINIO_ACCESS_KEY", "minioadmin")
-os.environ.setdefault("MINIO_SECRET_KEY", "minioadmin123")
+if "DATABASE_URL" not in os.environ:
+    logger_msg = "WARNING: DATABASE_URL not set — load a .env file or export it before running"
+    print(logger_msg, file=sys.stderr)
 
 from libs.shared.config.payer_signatures import PAYER_SIGNATURES
 from libs.shared.db.models.enums import DocTypeEnum, PayerNameEnum

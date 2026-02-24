@@ -23,6 +23,8 @@ print("=" * 60, flush=True)
 print("Downloading ML models (build-time only, ~320 MB total)", flush=True)
 print("=" * 60, flush=True)
 
+_failures: list[str] = []
+
 # ── 1. Sentence Transformers (embeddings / semantic search) ─────────────────
 print("\n[1/3] sentence-transformers/all-MiniLM-L6-v2 ...", flush=True)
 try:
@@ -30,7 +32,8 @@ try:
     SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
     print("      done.", flush=True)
 except Exception as e:
-    print(f"      WARNING: {e}", flush=True)
+    print(f"      FAILED: {e}", flush=True)
+    _failures.append("sentence-transformers")
 
 # ── 2. LayoutLM Document QA (field extraction VLM) ─────────────────────────
 print("\n[2/3] impira/layoutlm-document-qa ...", flush=True)
@@ -42,7 +45,8 @@ try:
     )
     print("      done.", flush=True)
 except Exception as e:
-    print(f"      WARNING: {e}", flush=True)
+    print(f"      FAILED: {e}", flush=True)
+    _failures.append("layoutlm-document-qa")
 
 # ── 3. PaddleOCR models (det + rec + cls, English) ─────────────────────────
 # Run in a subprocess: PaddleOCR can conflict with other imports if mixed
@@ -51,20 +55,24 @@ paddle_script = """
 import os, sys
 os.environ["PADDLEOCR_HOME"] = "/app/.cache/paddleocr"
 os.environ["FLAGS_allocator_strategy"] = "auto_growth"
-try:
-    from paddleocr import PaddleOCR
-    ocr = PaddleOCR(use_angle_cls=True, lang="en", show_log=False)
-    print("      done.", flush=True)
-except Exception as e:
-    print(f"      WARNING: {e}", flush=True)
+from paddleocr import PaddleOCR
+ocr = PaddleOCR(use_angle_cls=True, lang="en", show_log=False)
+print("      done.", flush=True)
 """
 result = subprocess.run(
     [sys.executable, "-c", paddle_script],
     timeout=300,
 )
 if result.returncode != 0:
-    print("      PaddleOCR model download had warnings (non-fatal).", flush=True)
+    print("      FAILED: PaddleOCR model download returned non-zero.", flush=True)
+    _failures.append("paddleocr")
 
 print("\n" + "=" * 60, flush=True)
-print("All models downloaded and cached. Image is fully self-contained.", flush=True)
-print("=" * 60, flush=True)
+if _failures:
+    print(f"FAILED to download: {', '.join(_failures)}", flush=True)
+    print("Docker build should NOT continue with missing models.", flush=True)
+    print("=" * 60, flush=True)
+    sys.exit(1)
+else:
+    print("All models downloaded and cached. Image is fully self-contained.", flush=True)
+    print("=" * 60, flush=True)

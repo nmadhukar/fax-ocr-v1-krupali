@@ -7,6 +7,7 @@ Model is loaded lazily on first use.  Runs locally — no paid API.
 
 import logging
 import re
+import threading
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -18,6 +19,8 @@ EMBEDDING_DIM = 384
 class EmbeddingClient:
     """Local sentence-transformers embedding client."""
 
+    _load_lock = threading.Lock()
+
     def __init__(self, model_name: str = DEFAULT_MODEL) -> None:
         self.model_name = model_name
         self._model: Any = None
@@ -28,20 +31,24 @@ class EmbeddingClient:
     # ------------------------------------------------------------------
 
     def _load_model(self) -> None:
-        """Load the sentence-transformers model (lazy, first-use)."""
+        """Load the sentence-transformers model (lazy, first-use, thread-safe)."""
         if self._model is not None:
             return
-        try:
-            from sentence_transformers import SentenceTransformer
+        with self._load_lock:
+            # Double-checked locking: re-check after acquiring lock
+            if self._model is not None:
+                return
+            try:
+                from sentence_transformers import SentenceTransformer
 
-            self._model = SentenceTransformer(self.model_name)
-            logger.info("Loaded embedding model: %s", self.model_name)
-        except (ImportError, RuntimeError):
-            logger.warning(
-                "sentence-transformers not available; embeddings disabled"
-            )
-            self._available = False
-            raise
+                self._model = SentenceTransformer(self.model_name)
+                logger.info("Loaded embedding model: %s", self.model_name)
+            except (ImportError, RuntimeError):
+                logger.warning(
+                    "sentence-transformers not available; embeddings disabled"
+                )
+                self._available = False
+                raise
 
     def is_available(self) -> bool:
         """Check whether the embedding model can be loaded.
@@ -112,6 +119,9 @@ class EmbeddingClient:
         if len(words) <= max_tokens:
             return [text.strip()]
 
+        # Ensure forward progress: overlap must be strictly less than max_tokens
+        step = max_tokens - min(overlap, max_tokens - 1)
+
         chunks: list[str] = []
         start = 0
         while start < len(words):
@@ -120,7 +130,7 @@ class EmbeddingClient:
             chunks.append(chunk)
             if end >= len(words):
                 break
-            start += max_tokens - overlap
+            start += step
 
         return chunks
 

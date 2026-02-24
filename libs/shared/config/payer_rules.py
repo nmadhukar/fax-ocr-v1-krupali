@@ -5,6 +5,7 @@ Loads and provides access to payer-specific field validation rules,
 canonicalization settings, and confidence thresholds.
 """
 
+import logging
 import re
 from datetime import date, datetime
 from functools import lru_cache
@@ -13,6 +14,8 @@ from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 
 class FieldValidation(BaseModel):
@@ -181,13 +184,17 @@ class PayerRulesLoader:
         if validation is None:
             return True, []
 
-        # Regex validation
+        # Regex validation (fullmatch for stricter matching)
         if validation.regex:
-            if not re.match(validation.regex, value):
-                errors.append(
-                    f"Field '{field_key}' does not match expected format. "
-                    f"Expected: {validation.description or validation.regex}"
-                )
+            try:
+                if not re.fullmatch(validation.regex, value):
+                    errors.append(
+                        f"Field '{field_key}' does not match expected format. "
+                        f"Expected: {validation.description or validation.regex}"
+                    )
+            except re.error:
+                logger.error("Invalid regex in payer rules for field %s: %s", field_key, validation.regex)
+                errors.append(f"Field '{field_key}' has an invalid validation regex")
 
         # Length validation
         if validation.min_length and len(value) < validation.min_length:

@@ -2,10 +2,13 @@
 Extraction repositories.
 """
 
+import logging
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from libs.shared.db.models.enums import ExtractionMethodEnum
 from libs.shared.db.models.fax_extraction import FaxExtractedField, FaxExtraction
@@ -173,6 +176,10 @@ class ExtractionRepository(BaseRepository[FaxExtraction]):
         """
         extraction = self.get_by_job(fax_job_id)
         if extraction is None:
+            logger.warning(
+                "update_flagged_fields: no extraction record for job %s — flags dropped",
+                fax_job_id,
+            )
             return
         extraction.flagged_fields = flagged_fields
         self.db.flush()
@@ -240,6 +247,8 @@ class ExtractionRepository(BaseRepository[FaxExtraction]):
             existing.extraction_json = extraction_json
             existing.model_versions = model_versions
             existing.pipeline_version = pipeline_version
+            # Reprocessing starts from fresh flags; stage 16b recomputes them.
+            existing.flagged_fields = []
             self.db.flush()
             return existing
 

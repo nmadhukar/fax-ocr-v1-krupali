@@ -116,7 +116,7 @@ LABEL_ALIASES: dict[str, list[str]] = {
         "Procedure Code",
         "HCPC/CPT codes",
     ],
-    "diagnosis_code": [
+    "diagnosis_codes": [
         "Diagnosis Code",
         "ICD-10",
         "ICD Code",
@@ -368,9 +368,18 @@ def _strip_label_prefix(field_key: str, value: str) -> str:
 def _ocr_normalize(text: str) -> str:
     """Normalize common OCR character confusions for label matching.
 
-    PaddleOCR often confuses: 0↔O, 1↔I/l
+    Only applied to alphabetic label text — NOT to values containing digits.
+    PaddleOCR often confuses: O↔0, I/l↔1 in labels.
     """
-    return text.replace("0", "o").replace("1", "l")
+    result = []
+    for ch in text:
+        if ch == "0" and not any(c.isdigit() for c in text if c != ch):
+            result.append("o")
+        elif ch == "1" and not any(c.isdigit() for c in text if c != ch):
+            result.append("l")
+        else:
+            result.append(ch)
+    return "".join(result)
 
 
 def _filter_tokens_by_field_type(
@@ -478,7 +487,7 @@ def _filter_tokens_by_field_type(
             return []
         return tokens
 
-    if field_key == "diagnosis_code":
+    if field_key == "diagnosis_codes":
         # ICD-10 format: letter followed by digits and optional dot — strict
         filtered = [t for t in tokens if re.match(r"^[A-Z]\d", t.text.strip())]
         return filtered  # Strict: no fallback, must match ICD pattern
@@ -527,9 +536,9 @@ def _filter_tokens_by_field_type(
     if field_key == "provider_name":
         combined = " ".join(t.text.strip() for t in tokens)
         combined_lower = combined.lower()
-        # Must have at least 2 words (rejects "LLC-ODMHAS0245051LABOTP")
+        # Must have at least 1 word with 3+ chars (single-word providers like "ProMedica" are valid)
         words = [w for w in combined.split() if len(w) > 0]
-        if len(words) < 2:
+        if len(words) < 1 or len(combined) < 3:
             return []
         # Reject letter closings, greetings, section headers, and prose
         _provider_reject = ("sincerely", "seriously", "dear", "regards", "attention",
@@ -919,17 +928,16 @@ def _find_field_by_label(
             value_text = parts[0]
     # Service code: stop at first non-code word (prevents "G0480 DRUG TEST DEF..." bleed)
     if field_key in ("service_code", "cpt_code", "hcpc_code"):
-        import re as _re_sc
         parts = value_text.split()
         code_parts = []
         for part in parts:
             clean = part.strip("()[]{}.,;:")
             # OCR correction: "112036" → "H2036"
-            if _re_sc.match(r"^11[0-9]{4}$", clean):
+            if re.match(r"^11[0-9]{4}$", clean):
                 clean = "H" + clean[2:]
                 part = clean
             has_digit = any(c.isdigit() for c in clean)
-            is_code_like = bool(_re_sc.match(r"^[A-Za-z0-9.\-]+$", clean)) and len(clean) <= 10
+            is_code_like = bool(re.match(r"^[A-Za-z0-9.\-]+$", clean)) and len(clean) <= 10
             if has_digit and is_code_like:
                 code_parts.append(part)
             else:

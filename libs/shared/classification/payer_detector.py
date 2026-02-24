@@ -147,6 +147,7 @@ class PayerDetector:
         try:
             return PayerNameEnum(key)
         except ValueError:
+            logger.warning("Payer key '%s' does not match any PayerNameEnum value", key)
             return PayerNameEnum.UNKNOWN
 
     @staticmethod

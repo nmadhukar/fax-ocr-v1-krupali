@@ -2,7 +2,7 @@
 Embedding model - Vector embeddings for semantic document search.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
@@ -73,7 +73,7 @@ class FaxEmbedding(Base):
 
     # Timestamp
     created_at: Mapped[datetime] = mapped_column(
-        default=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
         server_default=text("NOW()"),
     )
 

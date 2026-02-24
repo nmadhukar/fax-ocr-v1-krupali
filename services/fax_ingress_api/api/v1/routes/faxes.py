@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from libs.shared.config import get_settings
@@ -117,8 +118,50 @@ def get_storage() -> S3StorageAdapter:
     return S3StorageAdapter()
 
 
+def _build_duplicate_response(existing: FaxJob) -> JSONResponse:
+    """Return a stable duplicate upload response payload."""
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={
+            "fax_job_id": str(existing.fax_job_id),
+            "status": existing.status.value,
+            "created_at": existing.created_at.isoformat(),
+            "message": "Duplicate fax detected. Returning existing job.",
+        },
+    )
+
+
+def _maybe_requeue_existing(existing: FaxJob) -> None:
+    """Re-queue existing job if it is currently pending or previously failed.
+
+    Uses a deterministic task_id derived from the fax_job_id to prevent
+    duplicate tasks when concurrent uploads hit the same duplicate.
+    """
+    if existing.status not in (FaxJobStatusEnum.PENDING, FaxJobStatusEnum.FAILED):
+        return
+
+    try:
+        logger.info(
+            "Re-queuing task for existing %s job %s",
+            existing.status.value,
+            existing.fax_job_id,
+        )
+        from workers.fax_processing_worker.celery_app import app as celery_app
+        # Deterministic task_id prevents duplicate tasks from concurrent re-queues
+        task_id = f"requeue-{existing.fax_job_id}"
+        result = celery_app.send_task(
+            "workers.fax_processing_worker.tasks.process_fax.process_fax_task",
+            args=[str(existing.fax_job_id), existing.tenant_id],
+            queue="fax_processing",
+            task_id=task_id,
+        )
+        logger.info("Task re-queued for job %s, task_id=%s", existing.fax_job_id, result.id)
+    except Exception as e:
+        logger.error("Failed to re-queue task for job %s: %s", existing.fax_job_id, e)
+
+
 @router.post("/upload", response_model=FaxUploadResponse, status_code=status.HTTP_201_CREATED)
-async def upload_fax(
+def upload_fax(
     request: Request,
     file: Annotated[UploadFile, File(description="Fax file (PDF, TIFF, or image)")],
     tenant_id: Annotated[str, Form(description="Tenant identifier")],
@@ -141,7 +184,7 @@ async def upload_fax(
     rate_limiter.check(request)
 
     # Tenant isolation: authenticated user's tenant must match
-    if settings.environment == "production" and user.tenant_id != tenant_id:
+    if settings.environment != "development" and user.tenant_id != tenant_id:
         if not user.is_admin:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -156,8 +199,8 @@ async def upload_fax(
             detail="Invalid file type. Allowed types: PDF, TIFF, PNG, JPEG",
         )
 
-    # Read file content
-    content = await file.read()
+    # Read file content (sync — FastAPI runs sync endpoints in threadpool)
+    content = file.file.read()
 
     # Validate file size
     max_size = settings.api.max_upload_size_mb * 1024 * 1024
@@ -180,28 +223,8 @@ async def upload_fax(
     repo = FaxJobRepository(db)
     existing = repo.get_by_sha256(file_hash, tenant_id=tenant_id)
     if existing:
-        # If job is still PENDING, try to queue the task again
-        if existing.status == FaxJobStatusEnum.PENDING:
-            try:
-                logger.info("Re-queuing task for existing PENDING job %s", existing.fax_job_id)
-                from workers.fax_processing_worker.celery_app import app as celery_app
-                result = celery_app.send_task(
-                    "workers.fax_processing_worker.tasks.process_fax.process_fax_task",
-                    args=[str(existing.fax_job_id), existing.tenant_id],
-                    queue="fax_processing",
-                )
-                logger.info("Task re-queued for job %s, task_id=%s", existing.fax_job_id, result.id)
-            except Exception as e:
-                logger.error("Failed to re-queue task for job %s: %s", existing.fax_job_id, e)
-        return JSONResponse(
-            status_code=status.HTTP_200_OK,
-            content={
-                "fax_job_id": str(existing.fax_job_id),
-                "status": existing.status.value,
-                "created_at": existing.created_at.isoformat(),
-                "message": "Duplicate fax detected. Returning existing job.",
-            },
-        )
+        _maybe_requeue_existing(existing)
+        return _build_duplicate_response(existing)
 
     # Generate storage key
     timestamp = datetime.now(timezone.utc).strftime("%Y/%m/%d")
@@ -246,7 +269,48 @@ async def upload_fax(
     )
 
     repo.create(fax_job)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = repo.get_by_sha256(file_hash, tenant_id=tenant_id)
+        if existing:
+            logger.info(
+                "Duplicate detected at commit-time for sha256=%s...; returning existing job %s",
+                file_hash[:8],
+                existing.fax_job_id,
+            )
+            _maybe_requeue_existing(existing)
+            existing_storage_key = getattr(existing, "file_storage_key", None)
+            if existing_storage_key and existing_storage_key == storage_key:
+                logger.info(
+                    "Skipping duplicate object cleanup for sha256=%s... because key %s is used by existing job",
+                    file_hash[:8],
+                    storage_key,
+                )
+            else:
+                try:
+                    storage.delete(storage_key)
+                except Exception:
+                    logger.warning(
+                        "Failed to delete duplicate object for job hash %s at key %s",
+                        file_hash[:8],
+                        storage_key,
+                    )
+            return _build_duplicate_response(existing)
+        try:
+            storage.delete(storage_key)
+        except Exception:
+            logger.warning(
+                "Failed to clean up uploaded object after IntegrityError for hash %s at key %s",
+                file_hash[:8],
+                storage_key,
+            )
+        logger.exception("IntegrityError persisting fax job sha256=%s...", file_hash[:8])
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to persist fax job. Please retry.",
+        )
 
     # Audit log
     audit = get_audit_logger(request, db)
@@ -302,7 +366,7 @@ def get_fax_job(
 
     # Tenant isolation
     settings = get_settings()
-    if settings.environment == "production" and job.tenant_id != user.tenant_id:
+    if settings.environment != "development" and job.tenant_id != user.tenant_id:
         if not user.is_admin:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -359,7 +423,7 @@ def get_fax_results(
         )
 
     settings = get_settings()
-    if settings.environment == "production" and job.tenant_id != user.tenant_id:
+    if settings.environment != "development" and job.tenant_id != user.tenant_id:
         if not user.is_admin:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -420,7 +484,7 @@ def get_fax_ocr(
 
     # Tenant isolation
     settings = get_settings()
-    if settings.environment == "production" and job.tenant_id != user.tenant_id:
+    if settings.environment != "development" and job.tenant_id != user.tenant_id:
         if not user.is_admin:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -500,7 +564,7 @@ def list_faxes(
             )
 
     jobs = repo.get_by_tenant(tenant_id, status_enum, skip, limit)
-    total = repo.count_by_tenant(tenant_id)
+    total = repo.count_by_tenant(tenant_id, status_enum)
 
     # Audit log (HIPAA: listing PHI records)
     audit = get_audit_logger(request, db)
@@ -551,7 +615,7 @@ def delete_fax_job(
 
     # Tenant isolation: non-admin users can only delete their own tenant's jobs
     settings = get_settings()
-    if settings.environment == "production" and job.tenant_id != user.tenant_id:
+    if settings.environment != "development" and job.tenant_id != user.tenant_id:
         if not user.is_admin:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -567,6 +631,25 @@ def delete_fax_job(
         storage.delete(job.file_storage_key)
     except Exception:
         pass  # Storage deletion is best-effort
+
+    # Delete derived page images (e.g., "{file_storage_key}_page_1.png")
+    derived_prefix = f"{job.file_storage_key}_page_"
+    try:
+        for derived_key in storage.list_keys(prefix=derived_prefix, limit=5000):
+            try:
+                storage.delete(derived_key)
+            except Exception:
+                logger.warning(
+                    "Best-effort delete failed for derived object %s",
+                    derived_key,
+                    exc_info=True,
+                )
+    except Exception:
+        logger.warning(
+            "Failed to list derived storage objects for prefix %s",
+            derived_prefix,
+            exc_info=True,
+        )
 
     # Delete from database (cascades to pages, tokens, etc.)
     repo.delete(job)

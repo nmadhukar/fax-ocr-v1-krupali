@@ -4,9 +4,10 @@ Template management endpoints.
 
 import io
 import logging
+import re
 from datetime import datetime
 from typing import Annotated, Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import cv2
 import numpy as np
@@ -204,6 +205,15 @@ def get_storage() -> S3StorageAdapter:
     return S3StorageAdapter()
 
 
+def _require_admin(user: AuthUser) -> None:
+    """Enforce admin-only access for template management."""
+    if not getattr(user, "is_admin", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
+
+
 # Template endpoints
 @router.post("", response_model=TemplateResponse, status_code=status.HTTP_201_CREATED)
 def create_template(
@@ -212,6 +222,8 @@ def create_template(
     db: Session = Depends(get_db),
 ) -> TemplateResponse:
     """Create a new template."""
+    _require_admin(user)
+
     # Validate enums
     try:
         payer_enum = PayerNameEnum(data.payer_name.upper())
@@ -255,10 +267,13 @@ def create_template(
 @router.get("", response_model=list[TemplateResponse])
 def list_templates(
     payer_name: str | None = None,
+    active_only: bool = False,
     user: AuthUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[TemplateResponse]:
-    """List all templates."""
+    """List templates (active and inactive by default)."""
+    _require_admin(user)
+
     repo = TemplateRepository(db)
 
     payer_enum = None
@@ -266,9 +281,12 @@ def list_templates(
         try:
             payer_enum = PayerNameEnum(payer_name.upper())
         except ValueError:
-            pass
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid payer_name: {payer_name}",
+            )
 
-    templates = repo.get_active_templates(payer_enum)
+    templates = repo.list_templates(payer_enum, active_only=active_only)
 
     return [
         TemplateResponse(
@@ -291,6 +309,8 @@ def get_template(
     db: Session = Depends(get_db),
 ) -> TemplateResponse:
     """Get template details."""
+    _require_admin(user)
+
     repo = TemplateRepository(db)
     template = repo.get_by_id(template_id)
 
@@ -327,6 +347,8 @@ def update_template(
     db: Session = Depends(get_db),
 ) -> TemplateResponse:
     """Update a template's metadata."""
+    _require_admin(user)
+
     repo = TemplateRepository(db)
     template = repo.get_by_id(template_id)
 
@@ -360,6 +382,8 @@ def delete_template(
     db: Session = Depends(get_db),
 ) -> None:
     """Delete a template and all its versions, samples, and fields (cascade)."""
+    _require_admin(user)
+
     repo = TemplateRepository(db)
     template = repo.get_by_id(template_id)
 
@@ -383,6 +407,8 @@ def create_version(
     db: Session = Depends(get_db),
 ) -> VersionResponse:
     """Create a new template version."""
+    _require_admin(user)
+
     template_repo = TemplateRepository(db)
     template = template_repo.get_by_id(template_id)
 
@@ -424,6 +450,8 @@ def activate_version(
     db: Session = Depends(get_db),
 ) -> VersionResponse:
     """Activate a template version."""
+    _require_admin(user)
+
     repo = TemplateVersionRepository(db)
     version = repo.activate_version(version_id)
 
@@ -455,6 +483,8 @@ def update_version_thresholds(
     db: Session = Depends(get_db),
 ) -> VersionResponse:
     """Update matching thresholds for a template version (match_min_score, phash_threshold, orb_min_matches)."""
+    _require_admin(user)
+
     repo = TemplateVersionRepository(db)
     version = repo.get_by_id(version_id)
 
@@ -483,7 +513,7 @@ def update_version_thresholds(
 
 # Sample endpoints
 @router.post("/versions/{version_id}/samples", response_model=SampleResponse, status_code=status.HTTP_201_CREATED)
-async def upload_sample(
+def upload_sample(
     version_id: UUID,
     file: Annotated[UploadFile, File(description="Sample image")],
     user: AuthUser = Depends(get_current_user),
@@ -491,6 +521,8 @@ async def upload_sample(
     storage: S3StorageAdapter = Depends(get_storage),
 ) -> SampleResponse:
     """Upload a template sample image."""
+    _require_admin(user)
+
     version_repo = TemplateVersionRepository(db)
     version = version_repo.get_by_id(version_id)
 
@@ -500,8 +532,23 @@ async def upload_sample(
             detail=f"Version not found: {version_id}",
         )
 
-    # Read image
-    content = await file.read()
+    # Read image with size limit (sync — FastAPI runs sync endpoints in threadpool)
+    MAX_SAMPLE_SIZE = 10 * 1024 * 1024  # 10 MB
+    content = file.file.read()
+    if len(content) > MAX_SAMPLE_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Sample image exceeds {MAX_SAMPLE_SIZE // (1024*1024)} MB limit",
+        )
+
+    # Validate image content type
+    allowed_types = {"image/png", "image/jpeg", "image/tiff", "image/bmp"}
+    if file.content_type and file.content_type not in allowed_types:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid content type: {file.content_type}. Allowed: {', '.join(allowed_types)}",
+        )
+
     nparr = np.frombuffer(content, np.uint8)
     image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
@@ -513,12 +560,21 @@ async def upload_sample(
 
     height, width = image.shape[:2]
 
-    # Compute features
+    # Compute features (cv2/ORB can raise on corrupted images)
     matcher = TemplateMatcher()
-    phash, kp_bytes, desc_bytes = matcher.compute_template_features(image)
+    try:
+        phash, kp_bytes, desc_bytes = matcher.compute_template_features(image)
+    except Exception as e:
+        logger.warning("Feature computation failed for sample upload: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Failed to compute image features — image may be corrupted",
+        )
 
-    # Store image
-    storage_key = f"templates/{version_id}/{file.filename}"
+    # Store image — sanitize the user-supplied filename
+    safe_name = re.sub(r"[^\w.\-]", "_", (file.filename or "sample.png").split("/")[-1].split("\\")[-1])
+    unique_prefix = f"{datetime.utcnow().strftime('%Y%m%dT%H%M%S%f')}_{uuid4().hex[:8]}"
+    storage_key = f"templates/{version_id}/{unique_prefix}_{safe_name}"
     storage.upload(storage_key, content, content_type=file.content_type or "image/png")
 
     # Create sample record
@@ -554,6 +610,8 @@ def create_field(
     db: Session = Depends(get_db),
 ) -> FieldResponse:
     """Create a template field definition."""
+    _require_admin(user)
+
     version_repo = TemplateVersionRepository(db)
     version = version_repo.get_by_id(version_id)
 
@@ -604,6 +662,8 @@ def list_fields(
     db: Session = Depends(get_db),
 ) -> list[FieldResponse]:
     """List all fields for a version."""
+    _require_admin(user)
+
     repo = TemplateFieldRepository(db)
     fields = repo.get_by_version(version_id)
 
@@ -627,14 +687,23 @@ def list_fields(
 
 # Test match endpoint
 @router.post("/test-match", response_model=TestMatchResponse)
-async def test_match(
+def test_match(
     file: Annotated[UploadFile, File(description="Image to test")],
     payer_hint: str | None = None,
     user: AuthUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> TestMatchResponse:
     """Test template matching against uploaded image."""
-    content = await file.read()
+    _require_admin(user)
+
+    MAX_TEST_SIZE = 10 * 1024 * 1024  # 10 MB
+    content = file.file.read()
+    if len(content) > MAX_TEST_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Image exceeds {MAX_TEST_SIZE // (1024*1024)} MB limit",
+        )
+
     nparr = np.frombuffer(content, np.uint8)
     image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
@@ -644,8 +713,20 @@ async def test_match(
             detail="Invalid image file",
         )
 
+    # Validate payer_hint against known enum values
+    validated_payer_hint = None
+    if payer_hint:
+        try:
+            PayerNameEnum(payer_hint.upper())
+            validated_payer_hint = payer_hint
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid payer_hint: {payer_hint}",
+            )
+
     matcher = TemplateMatcher()
-    result = matcher.match(image, db, payer_hint)
+    result = matcher.match(image, db, validated_payer_hint)
 
     return TestMatchResponse(
         matched=result.matched,
@@ -680,6 +761,8 @@ def suggest_roi(
     Returns:
         SuggestRoiResponse with suggested ROI coordinates.
     """
+    _require_admin(user)
+
     page_repo = FaxPageRepository(db)
     page = page_repo.get_page_with_tokens(data.fax_job_id, data.page_number)
 
@@ -766,6 +849,7 @@ def _find_value_in_tokens(
                     temp = dp[j]
                     dp[j] = prev if a[i - 1] == b[j - 1] else 1 + min(prev, dp[j], dp[j - 1])
                     prev = temp
+            return dp[n]
 
     value_words = value.strip().upper().split()
     if not value_words:
@@ -850,7 +934,7 @@ def _find_field_by_label(
     "/versions/{version_id}/test-extract",
     response_model=TestExtractResponse,
 )
-async def test_extract(
+def test_extract(
     version_id: UUID,
     file: Annotated[UploadFile, File(description="Page image to test extraction")],
     user: AuthUser = Depends(get_current_user),
@@ -861,6 +945,8 @@ async def test_extract(
     Upload a page image and run the template's ROI fields against it
     to preview what values would be extracted.
     """
+    _require_admin(user)
+
     version_repo = TemplateVersionRepository(db)
     version = version_repo.get_by_id(version_id)
 
@@ -870,7 +956,13 @@ async def test_extract(
             detail=f"Version not found: {version_id}",
         )
 
-    content = await file.read()
+    MAX_TEST_SIZE = 10 * 1024 * 1024  # 10 MB
+    content = file.file.read()
+    if len(content) > MAX_TEST_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Image exceeds {MAX_TEST_SIZE // (1024*1024)} MB limit",
+        )
     nparr = np.frombuffer(content, np.uint8)
     image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 

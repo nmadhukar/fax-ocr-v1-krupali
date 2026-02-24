@@ -2,7 +2,7 @@
 Extraction models - Extracted field values and final results.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
@@ -125,7 +125,7 @@ class FaxExtractedField(Base):
 
     # Timestamp
     created_at: Mapped[datetime] = mapped_column(
-        default=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
         server_default=text("NOW()"),
     )
 
@@ -161,7 +161,7 @@ class FaxExtractedField(Base):
 
         if self.candidates is None:
             self.candidates = []
-        self.candidates.append(candidate)
+        self.candidates = [*self.candidates, candidate]
 
     def get_best_candidate(self) -> dict[str, Any] | None:
         """
@@ -259,7 +259,7 @@ class FaxExtraction(Base):
 
     # Timestamp
     created_at: Mapped[datetime] = mapped_column(
-        default=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
         server_default=text("NOW()"),
     )
 

@@ -65,6 +65,15 @@ class MetricsUpdate(BaseModel):
     metrics: dict[str, Any]
 
 
+def _require_admin(user: AuthUser) -> None:
+    """Enforce admin-only access for model version management."""
+    if not getattr(user, "is_admin", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
+
+
 # --- Endpoints ---
 
 @router.get("", response_model=list[ModelVersionResponse])
@@ -74,6 +83,8 @@ def list_model_versions(
     db: Session = Depends(get_db),
 ) -> list[ModelVersionResponse]:
     """List model versions, optionally filtered by type."""
+    _require_admin(user)
+
     repo = ModelVersionRepository(db)
     if model_type:
         versions = repo.get_by_type(model_type.upper())
@@ -89,6 +100,8 @@ def get_active_version(
     db: Session = Depends(get_db),
 ) -> ModelVersionResponse:
     """Get the currently active version for a model type."""
+    _require_admin(user)
+
     repo = ModelVersionRepository(db)
     version = repo.get_active(model_type.upper())
     if not version:
@@ -106,6 +119,8 @@ def register_model_version(
     db: Session = Depends(get_db),
 ) -> ModelVersionResponse:
     """Register a new model version (inactive by default)."""
+    _require_admin(user)
+
     repo = ModelVersionRepository(db)
     version = repo.register_version(
         model_type=data.model_type.upper(),
@@ -127,8 +142,12 @@ def promote_model_version(
     db: Session = Depends(get_db),
 ) -> ModelVersionResponse:
     """Promote a model version to active (deactivates others of same type)."""
+    _require_admin(user)
+
     repo = ModelVersionRepository(db)
-    version = repo.promote(model_version_id, promoted_by=data.promoted_by)
+    # Use authenticated user identity for audit trail (ignore user-supplied promoted_by)
+    promoted_by = getattr(user, "user_id", None) or getattr(user, "sub", "unknown")
+    version = repo.promote(model_version_id, promoted_by=str(promoted_by))
     if not version:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -137,7 +156,7 @@ def promote_model_version(
     db.commit()
     logger.info(
         "Promoted model version %s (%s/%s) by %s",
-        model_version_id, version.model_type, version.version_tag, data.promoted_by,
+        model_version_id, version.model_type, version.version_tag, promoted_by,
     )
     return _to_response(version)
 
@@ -150,6 +169,8 @@ def update_model_metrics(
     db: Session = Depends(get_db),
 ) -> ModelVersionResponse:
     """Update metrics for a model version."""
+    _require_admin(user)
+
     repo = ModelVersionRepository(db)
     version = repo.update_metrics(model_version_id, data.metrics)
     if not version:
@@ -168,6 +189,8 @@ def delete_model_version(
     db: Session = Depends(get_db),
 ) -> None:
     """Delete a model version."""
+    _require_admin(user)
+
     repo = ModelVersionRepository(db)
     deleted = repo.delete_by_id(model_version_id)
     if not deleted:

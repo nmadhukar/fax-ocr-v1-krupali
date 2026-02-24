@@ -86,6 +86,28 @@ class TemplateRepository(BaseRepository[FaxTemplate]):
         )
         return self.db.execute(stmt).unique().scalar_one_or_none()
 
+    def list_templates(
+        self,
+        payer_name: PayerNameEnum | None = None,
+        active_only: bool = False,
+    ) -> list[FaxTemplate]:
+        """List templates with optional payer filter and active-state filter."""
+        conditions = []
+        if payer_name is not None:
+            conditions.append(FaxTemplate.payer_name == payer_name)
+        if active_only:
+            conditions.append(FaxTemplate.is_active == True)
+
+        stmt = (
+            select(FaxTemplate)
+            .options(joinedload(FaxTemplate.versions))
+            .order_by(FaxTemplate.created_at.desc())
+        )
+        if conditions:
+            stmt = stmt.where(and_(*conditions))
+
+        return list(self.db.execute(stmt).unique().scalars().all())
+
 
 class TemplateVersionRepository(BaseRepository[FaxTemplateVersion]):
     """Repository for FaxTemplateVersion model."""

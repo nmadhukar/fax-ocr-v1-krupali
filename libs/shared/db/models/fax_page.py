@@ -2,7 +2,7 @@
 FaxPage model - Individual pages from fax documents.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
@@ -95,7 +95,7 @@ class FaxPage(Base):
 
     # Timestamp
     created_at: Mapped[datetime] = mapped_column(
-        default=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
         server_default=text("NOW()"),
     )
 

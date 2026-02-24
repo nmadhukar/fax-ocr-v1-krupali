@@ -32,10 +32,15 @@ class FeedbackAnalyzer:
     def __init__(self, db: Session):
         self.db = db
 
-    def analyze_and_recommend(self, days: int = 30) -> dict[str, Any]:
-        """Analyze feedback data and produce recalibration recommendations."""
+    def analyze_and_recommend(self, days: int = 30, tenant_id: str | None = None) -> dict[str, Any]:
+        """Analyze feedback data and produce recalibration recommendations.
+
+        Args:
+            days: Number of days of history to analyze.
+            tenant_id: Optional tenant filter for multi-tenant isolation.
+        """
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-        corrections = self._get_corrections(cutoff)
+        corrections = self._get_corrections(cutoff, tenant_id=tenant_id)
 
         if not corrections:
             return {
@@ -54,8 +59,8 @@ class FeedbackAnalyzer:
             "roi_drift_warnings": self._check_roi_drift(corrections),
         }
 
-    def _get_corrections(self, cutoff: datetime) -> list[dict[str, Any]]:
-        """Fetch all correction feedback records with job metadata."""
+    def _get_corrections(self, cutoff: datetime, tenant_id: str | None = None) -> list[dict[str, Any]]:
+        """Fetch correction feedback records with job metadata."""
         stmt = (
             select(
                 FaxFeedback.field_key,
@@ -70,6 +75,8 @@ class FeedbackAnalyzer:
                 FaxFeedback.feedback_type == "correction",
             )
         )
+        if tenant_id:
+            stmt = stmt.where(FaxJob.tenant_id == tenant_id)
         return [
             {
                 "field_key": r.field_key,

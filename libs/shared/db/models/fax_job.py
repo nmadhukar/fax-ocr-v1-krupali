@@ -2,7 +2,7 @@
 FaxJob model - Core entity tracking for fax documents.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
@@ -86,7 +86,7 @@ class FaxJob(Base):
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
-        default=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
         server_default=text("NOW()"),
     )
     processing_started_at: Mapped[datetime | None] = mapped_column(default=None)

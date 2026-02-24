@@ -7,17 +7,18 @@ Tier 3: Summariser (OFF by default — stub)
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from libs.shared.config import get_settings
 from libs.shared.db.session import get_db
+from libs.shared.security.auth import AuthUser, get_current_user
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +33,19 @@ class QueryRequest(BaseModel):
     """Query request body."""
 
     query: str = Field(..., min_length=1, max_length=2000, description="Search query text")
-    tenant_id: str = Field(default="default", description="Tenant identifier")
     tier: int = Field(default=1, ge=1, le=3, description="Query tier: 1=structured, 2=semantic, 3=summariser")
     limit: int = Field(default=10, ge=1, le=100, description="Max results to return")
     fax_job_id: str | None = Field(default=None, description="Optional: limit to specific fax job")
+
+    @field_validator("fax_job_id")
+    @classmethod
+    def validate_fax_job_id(cls, v: str | None) -> str | None:
+        if v is not None:
+            try:
+                UUID(v)
+            except ValueError:
+                raise ValueError("fax_job_id must be a valid UUID")
+        return v
 
 
 class QueryResultItem(BaseModel):
@@ -70,39 +80,62 @@ def _tier1_search(
     db: Session,
     query: str,
     limit: int,
+    tenant_id: str,
     fax_job_id: str | None = None,
 ) -> list[QueryResultItem]:
     """Search extracted fields by field_key or value match."""
     query_lower = query.lower().strip()
 
+    # Escape LIKE special characters to prevent pattern injection
+    escaped = query_lower.replace("%", r"\%").replace("_", r"\_")
+
     # Search by field key exact match or value ILIKE
     params: dict[str, Any] = {
         "query_key": query_lower,
-        "query_like": f"%{query_lower}%",
+        "query_like": f"%{escaped}%",
         "limit": limit,
+        "tenant_id": tenant_id,
     }
 
-    job_filter = ""
+    # Build SQL without f-string interpolation — use static conditional blocks
     if fax_job_id:
-        job_filter = "AND f.fax_job_id = :job_id"
         params["job_id"] = fax_job_id
-
-    sql = text(f"""
-        SELECT
-            f.fax_job_id::text,
-            f.field_key,
-            f.field_value,
-            f.field_conf,
-            f.method::text
-        FROM fax_extracted_field f
-        WHERE (
-            LOWER(f.field_key) = :query_key
-            OR LOWER(f.field_value) LIKE :query_like
-        )
-        {job_filter}
-        ORDER BY f.field_conf DESC NULLS LAST
-        LIMIT :limit
-    """)
+        sql = text("""
+            SELECT
+                f.fax_job_id::text,
+                f.field_key,
+                f.field_value,
+                f.field_conf,
+                f.method::text
+            FROM fax_extracted_field f
+            JOIN fax_job j ON j.fax_job_id = f.fax_job_id
+            WHERE (
+                LOWER(f.field_key) = :query_key
+                OR LOWER(f.field_value) LIKE :query_like
+            )
+            AND j.tenant_id = :tenant_id
+            AND f.fax_job_id = :job_id
+            ORDER BY f.field_conf DESC NULLS LAST
+            LIMIT :limit
+        """)
+    else:
+        sql = text("""
+            SELECT
+                f.fax_job_id::text,
+                f.field_key,
+                f.field_value,
+                f.field_conf,
+                f.method::text
+            FROM fax_extracted_field f
+            JOIN fax_job j ON j.fax_job_id = f.fax_job_id
+            WHERE (
+                LOWER(f.field_key) = :query_key
+                OR LOWER(f.field_value) LIKE :query_like
+            )
+            AND j.tenant_id = :tenant_id
+            ORDER BY f.field_conf DESC NULLS LAST
+            LIMIT :limit
+        """)
 
     result = db.execute(sql, params)
     rows = result.fetchall()
@@ -128,6 +161,7 @@ def _tier2_search(
     db: Session,
     query: str,
     limit: int,
+    tenant_id: str,
     fax_job_id: str | None = None,
 ) -> list[QueryResultItem]:
     """Semantic search using pgvector cosine similarity."""
@@ -150,6 +184,7 @@ def _tier2_search(
         results = emb_repo.cosine_search(
             query_embedding=query_vec,
             limit=limit,
+            tenant_id=tenant_id,
             fax_job_id=job_uuid,
         )
 
@@ -179,6 +214,7 @@ def _tier2_search(
 @router.post("/query", response_model=QueryResponse)
 def query_faxes(
     request: QueryRequest,
+    user: AuthUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> QueryResponse:
     """Query extracted fax data.
@@ -187,14 +223,15 @@ def query_faxes(
     - **Tier 2**: Semantic vector search (pgvector cosine similarity)
     - **Tier 3**: Summariser (OFF — returns empty)
     """
-    start = datetime.utcnow()
+    start = datetime.now(timezone.utc)
+    tenant_id = user.tenant_id
     query_id = str(uuid4())
 
     results: list[QueryResultItem] = []
 
     if request.tier == 1:
         results = _tier1_search(
-            db, request.query, request.limit, request.fax_job_id,
+            db, request.query, request.limit, tenant_id, request.fax_job_id,
         )
     elif request.tier == 2:
         settings = get_settings()
@@ -204,7 +241,7 @@ def query_faxes(
                 detail="Tier 2 (vector search) is disabled via feature flag",
             )
         results = _tier2_search(
-            db, request.query, request.limit, request.fax_job_id,
+            db, request.query, request.limit, tenant_id, request.fax_job_id,
         )
     elif request.tier == 3:
         # Tier 3: Summariser stub — OFF by default
@@ -236,9 +273,10 @@ def query_faxes(
                 )
             db.commit()
         except Exception:
+            db.rollback()
             logger.warning("Failed to store query citations", exc_info=True)
 
-    elapsed = (datetime.utcnow() - start).total_seconds() * 1000
+    elapsed = (datetime.now(timezone.utc) - start).total_seconds() * 1000
 
     return QueryResponse(
         query_id=query_id,

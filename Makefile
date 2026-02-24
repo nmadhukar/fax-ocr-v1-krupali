@@ -1,4 +1,4 @@
-.PHONY: help install dev-install lint format test docker-up docker-down migrate celery-worker api-ingress api-review
+.PHONY: help install dev-install lint format test docker-up docker-down migrate celery-worker api-ingress api-review review-fast review-full test-regression smoke-api
 
 # Default target
 help:
@@ -30,6 +30,10 @@ help:
 	@echo "  test            Run all tests"
 	@echo "  test-unit       Run unit tests only"
 	@echo "  test-integration Run integration tests only"
+	@echo "  test-regression Run focused regression tests"
+	@echo "  review-fast     Compile + quick tests"
+	@echo "  review-full     Lint + type-check + full tests"
+	@echo "  smoke-api       Check local API health endpoints"
 
 # Setup
 install:
@@ -97,6 +101,23 @@ test-unit:
 
 test-integration:
 	pytest tests/integration/ -v
+
+test-regression:
+	python -m pytest -q tests/test_route_regressions.py tests/test_stage_extraction_regressions.py tests/test_review_workflow_guards.py
+
+review-fast:
+	python -m compileall libs services workers tests
+	python -m pytest -q
+
+review-full:
+	python -m ruff check libs services workers tests
+	python -m black --check libs services workers tests
+	python -m isort --check-only libs services workers tests
+	python -m mypy libs services workers
+	python -m pytest tests -v
+
+smoke-api:
+	python -c "import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=5); urllib.request.urlopen('http://localhost:8002/health', timeout=5); urllib.request.urlopen('http://localhost:8003/health', timeout=5); print('OK')"
 
 # Clean
 clean:

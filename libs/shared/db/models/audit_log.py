@@ -2,7 +2,7 @@
 AuditLog model - HIPAA-compliant audit trail.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -78,7 +78,7 @@ class AuditLog(Base):
 
     # Timestamp
     created_at: Mapped[datetime] = mapped_column(
-        default=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
         server_default=text("NOW()"),
         index=True,
     )

@@ -1,0 +1,737 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fax Operations Console</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="bg-orb orb-a"></div>
+  <div class="bg-orb orb-b"></div>
+  <div class="bg-grid"></div>
+
+  <header class="hero">
+    <div class="hero-copy">
+      <p class="eyebrow">HEALTHCARE FAX ETL</p>
+      <h1>Operations Console</h1>
+      <p class="subhead">
+        Upload, review, template-configure, validate extraction quality, and run API workflows from one professional UI.
+      </p>
+    </div>
+    <div class="hero-meta">
+      <span class="pill" id="envPill">Environment: Development</span>
+      <span class="pill" id="authPill">Auth: Optional</span>
+    </div>
+  </header>
+
+  <main class="app-shell">
+    <aside class="panel settings-panel reveal">
+      <h2>Connection Profile</h2>
+      <p class="panel-note">Saved in browser local storage on this machine.</p>
+
+      <label class="field">
+        <span>Ingress API Base URL</span>
+        <input id="cfgIngress" type="text" value="http://localhost:8001">
+      </label>
+      <label class="field">
+        <span>Review API Base URL</span>
+        <input id="cfgReview" type="text" value="http://localhost:8002">
+      </label>
+      <label class="field">
+        <span>Query API Base URL</span>
+        <input id="cfgQuery" type="text" value="http://localhost:8003">
+      </label>
+      <label class="field">
+        <span>Bearer Token (optional)</span>
+        <input id="cfgToken" type="password" placeholder="Paste JWT for staging/production">
+      </label>
+      <label class="field">
+        <span>Reviewer ID (optional)</span>
+        <input id="cfgReviewer" type="text" placeholder="reviewer-1">
+      </label>
+      <div class="button-row">
+        <button id="saveConfigBtn" class="btn primary" type="button">Save Profile</button>
+        <button id="testHealthBtn" class="btn ghost" type="button">Test Health</button>
+      </div>
+      <button id="resetConfigBtn" class="btn subtle" type="button">Reset Defaults</button>
+
+      <h3>Activity</h3>
+      <ul id="activityFeed" class="activity-feed"></ul>
+    </aside>
+
+    <section class="workspace">
+      <nav class="tabs reveal" aria-label="Operations areas">
+        <button class="tab active" type="button" data-tab="workflow">Workflow</button>
+        <button class="tab" type="button" data-tab="templates">Templates</button>
+        <button class="tab" type="button" data-tab="intelligence">Intelligence</button>
+        <button class="tab" type="button" data-tab="api">API Console</button>
+      </nav>
+
+      <section id="tab-workflow" class="tab-panel active">
+        <article class="card reveal">
+          <h2>Upload Fax</h2>
+          <form id="uploadForm" class="form-grid">
+            <label class="field span-2">
+              <span>Document File</span>
+              <input id="uploadFile" type="file" required>
+            </label>
+            <label class="field">
+              <span>Tenant ID</span>
+              <input id="uploadTenant" type="text" value="dev-tenant" required>
+            </label>
+            <label class="field">
+              <span>Payer Hint (optional)</span>
+              <input id="uploadPayer" type="text" placeholder="ANTHEM">
+            </label>
+            <label class="field span-2">
+              <span>External Fax ID (optional)</span>
+              <input id="uploadExternalId" type="text" placeholder="case-123">
+            </label>
+            <div class="span-2">
+              <button class="btn primary" type="submit">Upload And Queue</button>
+            </div>
+          </form>
+          <pre id="uploadOutput" class="code-block"></pre>
+        </article>
+
+        <article class="card reveal">
+          <h2>Fax Jobs</h2>
+          <form id="listJobsForm" class="form-grid">
+            <label class="field">
+              <span>Status Filter</span>
+              <select id="jobsStatus">
+                <option value="">All</option>
+                <option value="PENDING">PENDING</option>
+                <option value="PROCESSING">PROCESSING</option>
+                <option value="NEEDS_REVIEW">NEEDS_REVIEW</option>
+                <option value="COMPLETED">COMPLETED</option>
+                <option value="FAILED">FAILED</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Tenant (admin only)</span>
+              <input id="jobsTenant" type="text" placeholder="tenant-id">
+            </label>
+            <label class="field">
+              <span>Skip</span>
+              <input id="jobsSkip" type="number" min="0" value="0">
+            </label>
+            <label class="field">
+              <span>Limit</span>
+              <input id="jobsLimit" type="number" min="1" max="500" value="25">
+            </label>
+            <div class="span-2">
+              <button class="btn primary" type="submit">Load Jobs</button>
+            </div>
+          </form>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Fax Job ID</th>
+                  <th>Status</th>
+                  <th>Payer</th>
+                  <th>Doc Type</th>
+                  <th>Needs Review</th>
+                  <th>Created</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="jobsTableBody"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="card reveal">
+          <h2>Job Inspector</h2>
+          <form id="jobInspectForm" class="form-grid">
+            <label class="field span-2">
+              <span>Fax Job ID</span>
+              <input id="inspectJobId" type="text" required>
+            </label>
+            <div class="button-row span-2">
+              <button class="btn primary" type="button" data-inspect-action="status">Get Status</button>
+              <button class="btn ghost" type="button" data-inspect-action="results">Get Results</button>
+              <button class="btn ghost" type="button" data-inspect-action="ocr">Get OCR</button>
+            </div>
+          </form>
+          <pre id="inspectOutput" class="code-block tall"></pre>
+        </article>
+
+        <article class="card reveal">
+          <h2>Review Queue (HITL)</h2>
+          <div class="button-row">
+            <button id="loadUnclaimedBtn" class="btn primary" type="button">Load Unclaimed</button>
+            <button id="loadPendingBtn" class="btn ghost" type="button">Load Pending</button>
+            <button id="releaseExpiredBtn" class="btn subtle" type="button">Release Expired Claims</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Fax Job ID</th>
+                  <th>Priority</th>
+                  <th>Claimed By</th>
+                  <th>Reasons</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="reviewQueueBody"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="card reveal">
+          <h2>Review Packet Workspace</h2>
+          <form id="reviewPacketForm" class="form-grid">
+            <label class="field span-2">
+              <span>Fax Job ID</span>
+              <input id="reviewJobId" type="text" required>
+            </label>
+            <div class="button-row span-2">
+              <button id="claimReviewBtn" class="btn primary" type="button">Claim</button>
+              <button id="loadPacketBtn" class="btn ghost" type="button">Load Packet</button>
+              <button id="submitCorrectionsBtn" class="btn success" type="button">Submit Corrections</button>
+            </div>
+          </form>
+
+          <div id="reviewMeta" class="meta-list"></div>
+
+          <h3>Selected Pages</h3>
+          <div id="reviewPages" class="page-grid"></div>
+
+          <h3>Extracted Fields And Corrections</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Field</th>
+                  <th>Current Value</th>
+                  <th>Confidence</th>
+                  <th>Flag</th>
+                  <th>Corrected Value</th>
+                </tr>
+              </thead>
+              <tbody id="reviewFieldsBody"></tbody>
+            </table>
+          </div>
+
+          <pre id="reviewOutput" class="code-block"></pre>
+        </article>
+      </section>
+
+      <section id="tab-templates" class="tab-panel">
+        <article class="card reveal">
+          <h2>Template Catalog</h2>
+          <form id="listTemplatesForm" class="form-grid">
+            <label class="field">
+              <span>Payer Filter</span>
+              <input id="tplPayerFilter" type="text" placeholder="ANTHEM">
+            </label>
+            <label class="field">
+              <span>Active Only</span>
+              <select id="tplActiveOnly">
+                <option value="false">No</option>
+                <option value="true">Yes</option>
+              </select>
+            </label>
+            <div class="button-row span-2">
+              <button class="btn primary" type="submit">Load Templates</button>
+            </div>
+          </form>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Template ID</th>
+                  <th>Name</th>
+                  <th>Payer</th>
+                  <th>Doc Type</th>
+                  <th>Active</th>
+                </tr>
+              </thead>
+              <tbody id="templatesBody"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="card reveal">
+          <h2>Create Or Modify Template</h2>
+          <form id="createTemplateForm" class="form-grid">
+            <label class="field">
+              <span>Template Name</span>
+              <input id="tplName" type="text" required>
+            </label>
+            <label class="field">
+              <span>Payer Name</span>
+              <input id="tplPayer" type="text" placeholder="HUMANA" required>
+            </label>
+            <label class="field">
+              <span>Doc Type</span>
+              <input id="tplDocType" type="text" placeholder="PRIOR_AUTH_FORM" required>
+            </label>
+            <label class="field">
+              <span>Description</span>
+              <input id="tplDescription" type="text">
+            </label>
+            <div class="span-2">
+              <button class="btn primary" type="submit">Create Template</button>
+            </div>
+          </form>
+
+          <form id="updateTemplateForm" class="form-grid compact">
+            <label class="field span-2">
+              <span>Template ID</span>
+              <input id="tplUpdateId" type="text" required>
+            </label>
+            <label class="field">
+              <span>New Name</span>
+              <input id="tplUpdateName" type="text">
+            </label>
+            <label class="field">
+              <span>Active</span>
+              <select id="tplUpdateActive">
+                <option value="">No Change</option>
+                <option value="true">true</option>
+                <option value="false">false</option>
+              </select>
+            </label>
+            <label class="field span-2">
+              <span>New Description</span>
+              <input id="tplUpdateDescription" type="text">
+            </label>
+            <div class="button-row span-2">
+              <button class="btn ghost" type="submit">Update Template</button>
+              <button id="deleteTemplateBtn" class="btn danger" type="button">Delete Template</button>
+            </div>
+          </form>
+          <pre id="templatesOutput" class="code-block"></pre>
+        </article>
+
+        <article class="card reveal">
+          <h2>Version Management</h2>
+          <form id="createVersionForm" class="form-grid">
+            <label class="field">
+              <span>Template ID</span>
+              <input id="verTemplateId" type="text" required>
+            </label>
+            <label class="field">
+              <span>Version Label</span>
+              <input id="verLabel" type="text" placeholder="v1.0" required>
+            </label>
+            <label class="field">
+              <span>Match Min Score</span>
+              <input id="verMinScore" type="number" step="0.01" min="0" max="1" value="0.75">
+            </label>
+            <label class="field">
+              <span>pHash Threshold</span>
+              <input id="verPhash" type="number" min="0" value="10">
+            </label>
+            <label class="field">
+              <span>ORB Min Matches</span>
+              <input id="verOrb" type="number" min="0" value="20">
+            </label>
+            <div class="span-2">
+              <button class="btn primary" type="submit">Create Version</button>
+            </div>
+          </form>
+
+          <form id="activateVersionForm" class="form-grid compact">
+            <label class="field span-2">
+              <span>Version ID</span>
+              <input id="verActivateId" type="text" required>
+            </label>
+            <div class="span-2">
+              <button class="btn ghost" type="submit">Activate Version</button>
+            </div>
+          </form>
+
+          <form id="updateVersionForm" class="form-grid compact">
+            <label class="field span-2">
+              <span>Version ID</span>
+              <input id="verUpdateId" type="text" required>
+            </label>
+            <label class="field">
+              <span>Match Min Score</span>
+              <input id="verUpdateMinScore" type="number" step="0.01" min="0" max="1">
+            </label>
+            <label class="field">
+              <span>pHash Threshold</span>
+              <input id="verUpdatePhash" type="number" min="0">
+            </label>
+            <label class="field">
+              <span>ORB Min Matches</span>
+              <input id="verUpdateOrb" type="number" min="0">
+            </label>
+            <div class="span-2">
+              <button class="btn ghost" type="submit">Update Version Thresholds</button>
+            </div>
+          </form>
+          <pre id="versionsOutput" class="code-block"></pre>
+        </article>
+
+        <article class="card reveal">
+          <h2>Samples And Fields</h2>
+          <form id="uploadSampleForm" class="form-grid">
+            <label class="field">
+              <span>Version ID</span>
+              <input id="sampleVersionId" type="text" required>
+            </label>
+            <label class="field">
+              <span>Sample Image</span>
+              <input id="sampleFile" type="file" required>
+            </label>
+            <div class="span-2">
+              <button class="btn primary" type="submit">Upload Sample</button>
+            </div>
+          </form>
+
+          <form id="createFieldForm" class="form-grid compact">
+            <label class="field">
+              <span>Version ID</span>
+              <input id="fieldVersionId" type="text" required>
+            </label>
+            <label class="field">
+              <span>Field Key</span>
+              <input id="fieldKey" type="text" placeholder="member_id" required>
+            </label>
+            <label class="field">
+              <span>Field Label</span>
+              <input id="fieldLabel" type="text">
+            </label>
+            <label class="field">
+              <span>Expected Type</span>
+              <input id="fieldExpectedType" type="text" value="text">
+            </label>
+            <label class="field">
+              <span>ROI x0</span>
+              <input id="fieldX0" type="number" step="0.0001" min="0" max="1" value="0.1" required>
+            </label>
+            <label class="field">
+              <span>ROI y0</span>
+              <input id="fieldY0" type="number" step="0.0001" min="0" max="1" value="0.1" required>
+            </label>
+            <label class="field">
+              <span>ROI x1</span>
+              <input id="fieldX1" type="number" step="0.0001" min="0" max="1" value="0.4" required>
+            </label>
+            <label class="field">
+              <span>ROI y1</span>
+              <input id="fieldY1" type="number" step="0.0001" min="0" max="1" value="0.2" required>
+            </label>
+            <label class="field">
+              <span>Target Page</span>
+              <input id="fieldTargetPage" type="number" min="1" value="1">
+            </label>
+            <label class="field">
+              <span>Validation Regex</span>
+              <input id="fieldRegex" type="text">
+            </label>
+            <label class="field inline">
+              <span>Required Field</span>
+              <input id="fieldRequired" type="checkbox">
+            </label>
+            <div class="span-2">
+              <button class="btn ghost" type="submit">Create Field</button>
+            </div>
+          </form>
+
+          <form id="listFieldsForm" class="form-grid compact">
+            <label class="field span-2">
+              <span>Version ID</span>
+              <input id="listFieldsVersionId" type="text" required>
+            </label>
+            <div class="span-2">
+              <button class="btn subtle" type="submit">List Fields For Version</button>
+            </div>
+          </form>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Field Key</th>
+                  <th>Label</th>
+                  <th>ROI</th>
+                  <th>Target Page</th>
+                  <th>Required</th>
+                </tr>
+              </thead>
+              <tbody id="fieldsBody"></tbody>
+            </table>
+          </div>
+          <pre id="fieldOpsOutput" class="code-block"></pre>
+        </article>
+
+        <article class="card reveal">
+          <h2>Template Testing</h2>
+          <form id="testMatchForm" class="form-grid">
+            <label class="field">
+              <span>Test Image</span>
+              <input id="testMatchFile" type="file" required>
+            </label>
+            <label class="field">
+              <span>Payer Hint (optional)</span>
+              <input id="testMatchPayer" type="text" placeholder="AETNA">
+            </label>
+            <div class="span-2">
+              <button class="btn primary" type="submit">Run Test Match</button>
+            </div>
+          </form>
+
+          <form id="testExtractForm" class="form-grid compact">
+            <label class="field">
+              <span>Version ID</span>
+              <input id="testExtractVersionId" type="text" required>
+            </label>
+            <label class="field">
+              <span>Page Image</span>
+              <input id="testExtractFile" type="file" required>
+            </label>
+            <div class="span-2">
+              <button class="btn ghost" type="submit">Run Test Extract</button>
+            </div>
+          </form>
+
+          <form id="suggestRoiForm" class="form-grid compact">
+            <label class="field">
+              <span>Fax Job ID</span>
+              <input id="roiFaxJobId" type="text" required>
+            </label>
+            <label class="field">
+              <span>Page Number</span>
+              <input id="roiPageNumber" type="number" min="1" value="1" required>
+            </label>
+            <label class="field">
+              <span>Field Key</span>
+              <input id="roiFieldKey" type="text" placeholder="member_id" required>
+            </label>
+            <label class="field">
+              <span>Correct Value (optional)</span>
+              <input id="roiCorrectValue" type="text">
+            </label>
+            <div class="span-2">
+              <button class="btn subtle" type="submit">Suggest ROI</button>
+            </div>
+          </form>
+          <pre id="testOpsOutput" class="code-block tall"></pre>
+        </article>
+      </section>
+
+      <section id="tab-intelligence" class="tab-panel">
+        <article class="card reveal">
+          <h2>Search Extracted Data</h2>
+          <form id="queryForm" class="form-grid">
+            <label class="field span-2">
+              <span>Query</span>
+              <input id="queryText" type="text" placeholder="member_id or value fragment" required>
+            </label>
+            <label class="field">
+              <span>Tier</span>
+              <select id="queryTier">
+                <option value="1">1 - Structured</option>
+                <option value="2">2 - Semantic</option>
+                <option value="3">3 - Summarizer (not implemented)</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Limit</span>
+              <input id="queryLimit" type="number" min="1" max="100" value="10">
+            </label>
+            <label class="field span-2">
+              <span>Fax Job ID (optional)</span>
+              <input id="queryFaxJobId" type="text">
+            </label>
+            <div class="span-2">
+              <button class="btn primary" type="submit">Run Query</button>
+            </div>
+          </form>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Fax Job ID</th>
+                  <th>Field Key</th>
+                  <th>Value</th>
+                  <th>Confidence</th>
+                  <th>Similarity</th>
+                </tr>
+              </thead>
+              <tbody id="queryResultsBody"></tbody>
+            </table>
+          </div>
+          <pre id="queryOutput" class="code-block"></pre>
+        </article>
+
+        <article class="card reveal">
+          <h2>Analytics Dashboard Calls</h2>
+          <form id="analyticsForm" class="form-grid">
+            <label class="field">
+              <span>Report</span>
+              <select id="analyticsReport">
+                <option value="quality">Quality Overview</option>
+                <option value="payers">All Payers</option>
+                <option value="payer">Single Payer</option>
+                <option value="feedback">Feedback Summary</option>
+                <option value="recalibrate">Recalibrate Thresholds</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Days</span>
+              <input id="analyticsDays" type="number" min="1" max="365" value="30">
+            </label>
+            <label class="field span-2">
+              <span>Payer Name (for single payer report)</span>
+              <input id="analyticsPayer" type="text" placeholder="HUMANA">
+            </label>
+            <div class="span-2">
+              <button class="btn primary" type="submit">Run Analytics</button>
+            </div>
+          </form>
+          <pre id="analyticsOutput" class="code-block tall"></pre>
+        </article>
+
+        <article class="card reveal">
+          <h2>Model Version Management</h2>
+          <form id="listModelsForm" class="form-grid compact">
+            <label class="field">
+              <span>Model Type Filter</span>
+              <input id="modelTypeFilter" type="text" placeholder="LAYOUTLM">
+            </label>
+            <div>
+              <button class="btn primary" type="submit">List Versions</button>
+            </div>
+          </form>
+
+          <form id="activeModelForm" class="form-grid compact">
+            <label class="field">
+              <span>Model Type</span>
+              <input id="activeModelType" type="text" placeholder="LAYOUTLM" required>
+            </label>
+            <div>
+              <button class="btn ghost" type="submit">Get Active Version</button>
+            </div>
+          </form>
+
+          <form id="registerModelForm" class="form-grid compact">
+            <label class="field">
+              <span>Model Type</span>
+              <input id="newModelType" type="text" required>
+            </label>
+            <label class="field">
+              <span>Version Tag</span>
+              <input id="newModelVersionTag" type="text" required>
+            </label>
+            <label class="field span-2">
+              <span>Model Path</span>
+              <input id="newModelPath" type="text" placeholder="impira/layoutlm-document-qa">
+            </label>
+            <label class="field span-2">
+              <span>Notes</span>
+              <input id="newModelNotes" type="text">
+            </label>
+            <label class="field span-2">
+              <span>Config JSON (optional)</span>
+              <textarea id="newModelConfig" rows="3" placeholder='{"score_multiplier": 1.2}'></textarea>
+            </label>
+            <div class="span-2">
+              <button class="btn ghost" type="submit">Register Version</button>
+            </div>
+          </form>
+
+          <form id="promoteModelForm" class="form-grid compact">
+            <label class="field">
+              <span>Model Version ID</span>
+              <input id="promoteModelId" type="text" required>
+            </label>
+            <div>
+              <button class="btn success" type="submit">Promote Version</button>
+            </div>
+          </form>
+
+          <form id="updateMetricsForm" class="form-grid compact">
+            <label class="field">
+              <span>Model Version ID</span>
+              <input id="metricsModelId" type="text" required>
+            </label>
+            <label class="field span-2">
+              <span>Metrics JSON</span>
+              <textarea id="metricsJson" rows="3" required>{"f1": 0.93}</textarea>
+            </label>
+            <div class="span-2">
+              <button class="btn ghost" type="submit">Update Metrics</button>
+            </div>
+          </form>
+
+          <form id="deleteModelForm" class="form-grid compact">
+            <label class="field">
+              <span>Model Version ID</span>
+              <input id="deleteModelId" type="text" required>
+            </label>
+            <div>
+              <button class="btn danger" type="submit">Delete Model Version</button>
+            </div>
+          </form>
+          <pre id="modelsOutput" class="code-block tall"></pre>
+        </article>
+      </section>
+
+      <section id="tab-api" class="tab-panel">
+        <article class="card reveal">
+          <h2>Advanced API Console</h2>
+          <p class="panel-note">Use this for endpoints not explicitly wired in the curated screens.</p>
+          <form id="apiConsoleForm" class="form-grid">
+            <label class="field">
+              <span>Service</span>
+              <select id="apiService">
+                <option value="ingress">Ingress</option>
+                <option value="review">Review</option>
+                <option value="query">Query</option>
+                <option value="custom">Custom</option>
+              </select>
+            </label>
+            <label class="field" id="apiCustomBaseWrap">
+              <span>Custom Base URL</span>
+              <input id="apiCustomBase" type="text" placeholder="http://localhost:9000">
+            </label>
+            <label class="field">
+              <span>Method</span>
+              <select id="apiMethod">
+                <option>GET</option>
+                <option>POST</option>
+                <option>PUT</option>
+                <option>PATCH</option>
+                <option>DELETE</option>
+              </select>
+            </label>
+            <label class="field span-2">
+              <span>Path</span>
+              <input id="apiPath" type="text" placeholder="/v1/faxes/reviews/pending" required>
+            </label>
+            <label class="field span-2">
+              <span>Query String (optional)</span>
+              <input id="apiQueryString" type="text" placeholder="limit=10&skip=0">
+            </label>
+            <label class="field span-2">
+              <span>JSON Body (optional)</span>
+              <textarea id="apiBody" rows="8" placeholder='{"sample": "value"}'></textarea>
+            </label>
+            <div class="span-2">
+              <button class="btn primary" type="submit">Execute Request</button>
+            </div>
+          </form>
+          <pre id="apiConsoleOutput" class="code-block tall"></pre>
+        </article>
+      </section>
+    </section>
+  </main>
+
+  <div id="toastHost" class="toast-host"></div>
+
+  <script src="./app.js"></script>
+</body>
+</html>

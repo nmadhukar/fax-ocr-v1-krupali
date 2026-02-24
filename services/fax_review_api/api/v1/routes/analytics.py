@@ -7,7 +7,7 @@ and confidence recalibration triggers.
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from libs.shared.db.repositories.analytics_repo import AnalyticsRepository
@@ -17,6 +17,15 @@ from libs.shared.security.auth import AuthUser, get_current_user
 router = APIRouter()
 
 
+def _require_admin(user: AuthUser) -> None:
+    """Enforce admin-only access for analytics endpoints."""
+    if not getattr(user, "is_admin", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
+
+
 @router.get("/quality")
 def get_quality_metrics(
     days: int = Query(default=30, ge=1, le=365, description="Lookback period in days"),
@@ -24,11 +33,13 @@ def get_quality_metrics(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """
-    Get overall quality metrics.
+    Get overall quality metrics (admin only).
 
     Returns processing counts, auto-finalize rate, average confidence,
     average processing time, and doc type distribution.
     """
+    _require_admin(user)
+
     repo = AnalyticsRepository(db)
     overview = repo.get_quality_overview(days=days)
     processing_times = repo.get_processing_time_stats(days=days)
@@ -49,9 +60,12 @@ def get_payer_stats(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Get per-payer processing stats and common corrections."""
+    _require_admin(user)
+
     repo = AnalyticsRepository(db)
-    stats = repo.get_payer_stats(payer_name=payer_name, days=days)
-    corrections = repo.get_corrections_by_payer(payer_name=payer_name, days=days)
+    tenant_id = None if user.is_admin else user.tenant_id
+    stats = repo.get_payer_stats(payer_name=payer_name, days=days, tenant_id=tenant_id)
+    corrections = repo.get_corrections_by_payer(payer_name=payer_name, days=days, tenant_id=tenant_id)
 
     return {
         "payer": payer_name.upper(),
@@ -67,8 +81,11 @@ def get_all_payer_stats(
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
     """Get stats for all payers."""
+    _require_admin(user)
+
     repo = AnalyticsRepository(db)
-    return repo.get_payer_stats(days=days)
+    tenant_id = None if user.is_admin else user.tenant_id
+    return repo.get_payer_stats(days=days, tenant_id=tenant_id)
 
 
 @router.get("/feedback-summary")
@@ -78,9 +95,12 @@ def get_feedback_summary(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Get feedback and correction summary with most-corrected fields."""
+    _require_admin(user)
+
     repo = AnalyticsRepository(db)
-    summary = repo.get_feedback_summary(days=days)
-    common_corrections = repo.get_common_corrections(days=days)
+    tenant_id = None if user.is_admin else user.tenant_id
+    summary = repo.get_feedback_summary(days=days, tenant_id=tenant_id)
+    common_corrections = repo.get_common_corrections(days=days, tenant_id=tenant_id)
 
     return {
         **summary,
@@ -95,11 +115,13 @@ def trigger_recalibration(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """
-    Trigger confidence threshold recalibration based on feedback data.
+    Trigger confidence threshold recalibration based on feedback data (admin only).
 
     Analyzes correction history and recommends per-payer,
     per-field confidence threshold adjustments.
     """
+    _require_admin(user)
+
     from libs.shared.feedback.analyzer import FeedbackAnalyzer
 
     analyzer = FeedbackAnalyzer(db)

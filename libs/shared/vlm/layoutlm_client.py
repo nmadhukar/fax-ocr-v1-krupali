@@ -19,6 +19,8 @@ Model: impira/layoutlm-document-qa (~130 MB, Apache 2.0)
 
 import logging
 import os
+import re
+import threading
 import time
 from typing import Any
 
@@ -47,7 +49,7 @@ FIELD_QUESTIONS = {
     "provider_fax":         "What is the provider fax number?",
     "service_code":         "What is the HCPCS or CPT procedure service code (like H2036 or 97151)?",
     "units_requested":      "How many units of service are requested or authorized?",
-    "diagnosis_code":       "What is the ICD-10 diagnosis code (like F84.0 or Z51.11, not a service code)?",
+    "diagnosis_codes":      "What is the ICD-10 diagnosis code (like F84.0 or Z51.11, not a service code)?",
     "decision":             "What is the prior authorization decision (APPROVED, DENIED, or PENDING)?",
 }
 
@@ -56,7 +58,7 @@ FIELD_QUESTIONS = {
 # ─── IMPORTANT PROMPTING RULES ───────────────────────────────────────────────
 # 1. patient_name  : explicitly exclude codes/numbers — the model confuses auth
 #                    numbers (alphanumeric like "0806WD89S") with names.
-# 2. diagnosis_code: explicitly distinguish from service/billing codes.
+# 2. diagnosis_codes: explicitly distinguish from service/billing codes.
 #                    ICD-10 starts with a letter (F, Z, G, M…) then digits+decimal.
 #                    Service codes (HCPCS/CPT like H2036, 97151) are different.
 # 3. prior_auth_number: give a format hint so model looks for alphanumeric string.
@@ -127,7 +129,7 @@ FIELD_QUESTIONS_VARIANTS: dict[str, list[str]] = {
         "What is the number of authorized or approved treatment units or visits?",
         "How many units or days were requested for this authorization?",
     ],
-    "diagnosis_code": [
+    "diagnosis_codes": [
         "What is the ICD-10 diagnosis code? (format: letter then digits like F84.0 or Z51.11, NOT a service code like H2036)",
         "What is the medical diagnosis ICD-10 code? (starts with a letter like F, Z, G, or M followed by numbers)",
         "What is the patient's diagnostic ICD code identifying their medical condition?",
@@ -154,55 +156,59 @@ class LayoutLMClient(VlmClient):
             config = VlmConfig(model_name=DEFAULT_MODEL)
         super().__init__(config)
         self._pipeline: Any = None
+        self._load_lock = threading.Lock()
 
     def _load_model(self) -> None:
-        """Load the LayoutLM pipeline lazily."""
+        """Load the LayoutLM pipeline lazily (thread-safe)."""
         if self._pipeline is not None:
             return
-
-        from transformers import pipeline
-
-        model_name = self.config.model_name
-        logger.info("Loading LayoutLM model: %s", model_name)
-
-        # Set cache dir to D: if available (C: may be low on space)
-        cache_dir = None
-        if os.path.exists("D:\\"):
-            cache_dir = "D:\\.cache\\huggingface\\hub"
-            os.makedirs(cache_dir, exist_ok=True)
-
-        # Load base model, optionally with LoRA adapter
-        adapter_path = getattr(self.config, "adapter_path", None)
-        if adapter_path:
-            try:
-                from peft import PeftModel
-                from transformers import AutoModelForDocumentQuestionAnswering
-
-                base_model = AutoModelForDocumentQuestionAnswering.from_pretrained(
-                    model_name, cache_dir=cache_dir
-                )
-                logger.info("Loading LoRA adapter from: %s", adapter_path)
-                model = PeftModel.from_pretrained(base_model, adapter_path)
-                model.eval()
-
-                self._pipeline = pipeline(
-                    "document-question-answering",
-                    model=model,
-                    cache_dir=cache_dir,
-                )
-                logger.info("LayoutLM model loaded with LoRA adapter")
+        with self._load_lock:
+            if self._pipeline is not None:
                 return
-            except ImportError:
-                logger.warning("peft not installed — loading base model without adapter")
-            except Exception as e:
-                logger.warning("Failed to load LoRA adapter: %s — using base model", e)
 
-        self._pipeline = pipeline(
-            "document-question-answering",
-            model=model_name,
-            cache_dir=cache_dir,
-        )
-        logger.info("LayoutLM model loaded on CPU")
+            from transformers import pipeline as hf_pipeline
+
+            model_name = self.config.model_name
+            logger.info("Loading LayoutLM model: %s", model_name)
+
+            # Set cache dir to D: if available (C: may be low on space)
+            cache_dir = None
+            if os.path.exists("D:\\"):
+                cache_dir = "D:\\.cache\\huggingface\\hub"
+                os.makedirs(cache_dir, exist_ok=True)
+
+            # Load base model, optionally with LoRA adapter
+            adapter_path = getattr(self.config, "adapter_path", None)
+            if adapter_path:
+                try:
+                    from peft import PeftModel
+                    from transformers import AutoModelForDocumentQuestionAnswering
+
+                    base_model = AutoModelForDocumentQuestionAnswering.from_pretrained(
+                        model_name, cache_dir=cache_dir
+                    )
+                    logger.info("Loading LoRA adapter from: %s", adapter_path)
+                    model = PeftModel.from_pretrained(base_model, adapter_path)
+                    model.eval()
+
+                    self._pipeline = hf_pipeline(
+                        "document-question-answering",
+                        model=model,
+                        cache_dir=cache_dir,
+                    )
+                    logger.info("LayoutLM model loaded with LoRA adapter")
+                    return
+                except ImportError:
+                    logger.warning("peft not installed — loading base model without adapter")
+                except Exception as e:
+                    logger.warning("Failed to load LoRA adapter: %s — using base model", e)
+
+            self._pipeline = hf_pipeline(
+                "document-question-answering",
+                model=model_name,
+                cache_dir=cache_dir,
+            )
+            logger.info("LayoutLM model loaded on CPU")
 
     def extract_candidates(
         self,
@@ -357,9 +363,6 @@ class LayoutLMClient(VlmClient):
             return False
 
 
-import re as _re
-
-
 def _numpy_to_pil(image: np.ndarray) -> "Image.Image":
     """Convert numpy BGR/grayscale array to PIL RGB image."""
     if len(image.shape) == 2:
@@ -369,7 +372,7 @@ def _numpy_to_pil(image: np.ndarray) -> "Image.Image":
     return Image.fromarray(image[:, :, ::-1], mode="RGB")
 
 # Common label prefixes the model includes in answers
-_LABEL_PREFIX_PATTERN = _re.compile(
+_LABEL_PREFIX_PATTERN = re.compile(
     r"^(?:"
     r"member\s*(?:id|number|name|dob|date\s*of\s*birth|#)|"
     r"health\s*plan\s*(?:id|number)?|"
@@ -419,7 +422,7 @@ _LABEL_PREFIX_PATTERN = _re.compile(
     r"date\s*(?:span)?|"
     r"date"
     r")\s*[:=\-]?\s*",
-    _re.IGNORECASE,
+    re.IGNORECASE,
 )
 
 

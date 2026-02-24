@@ -1,17 +1,20 @@
 # Start all 4 services: Ingress (8001), Review (8002), Query (8003), Worker
-$ROOT   = "c:\Users\suran\Desktop\fax_ocr\fax_ocr"
+# Compute project root relative to this script
+$ROOT   = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $PYTHON = "$ROOT\venv\Scripts\python.exe"
 
+# Load env vars from .env if it exists, otherwise use defaults.
+# WARNING: In production, set these via your deployment system, not here.
 $env:PYTHONPATH              = $ROOT
-$env:DATABASE_URL            = "postgresql+psycopg2://faxadmin:faxpass123@127.0.0.1:5432/fax_processor"
-$env:REDIS_URL               = "redis://127.0.0.1:6379/0"
-$env:CELERY_BROKER_URL       = "redis://127.0.0.1:6379/0"
-$env:CELERY_RESULT_BACKEND   = "redis://127.0.0.1:6379/1"
-$env:MINIO_ENDPOINT          = "127.0.0.1:9000"
-$env:MINIO_ACCESS_KEY        = "minioadmin"
-$env:MINIO_SECRET_KEY        = "minioadmin123"
-$env:ENVIRONMENT             = "development"
-$env:SECRET_KEY              = "dev-secret-key-batch3-test"
+if (-not $env:DATABASE_URL)          { $env:DATABASE_URL            = "postgresql+psycopg2://faxadmin:faxpass123@127.0.0.1:5432/fax_processor" }
+if (-not $env:REDIS_URL)             { $env:REDIS_URL               = "redis://127.0.0.1:6379/0" }
+if (-not $env:CELERY_BROKER_URL)     { $env:CELERY_BROKER_URL       = "redis://127.0.0.1:6379/0" }
+if (-not $env:CELERY_RESULT_BACKEND) { $env:CELERY_RESULT_BACKEND   = "redis://127.0.0.1:6379/1" }
+if (-not $env:MINIO_ENDPOINT)        { $env:MINIO_ENDPOINT          = "127.0.0.1:9000" }
+if (-not $env:MINIO_ACCESS_KEY)      { $env:MINIO_ACCESS_KEY        = "minioadmin" }
+if (-not $env:MINIO_SECRET_KEY)      { $env:MINIO_SECRET_KEY        = "minioadmin123" }
+if (-not $env:ENVIRONMENT)           { $env:ENVIRONMENT             = "development" }
+if (-not $env:SECRET_KEY)            { $env:SECRET_KEY              = "dev-secret-key-change-in-production" }
 $env:ENABLE_VLM              = "true"
 $env:VLM_LAYOUTLM_ENABLED    = "true"
 

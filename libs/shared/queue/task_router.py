@@ -66,10 +66,10 @@ class TaskRouter:
         """
         queue = cls.get_queue(task_name)
 
-        # Check for priority override in kwargs
+        # Check for priority override in kwargs (don't mutate caller's dict)
         priority = cls.Priority.NORMAL
         if kwargs and "priority" in kwargs:
-            priority = kwargs.pop("priority")
+            priority = kwargs["priority"]
 
         return {
             "queue": queue,

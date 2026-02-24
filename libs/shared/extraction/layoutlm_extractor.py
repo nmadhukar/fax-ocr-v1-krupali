@@ -489,7 +489,8 @@ def _validate_and_clean_value(field_key: str, raw_value: str) -> str | None:
                            "caresource", "molina", "anthem", "humana", "buckeye",
                            "amerihealth", "paramount", "promedica", "aetna",
                            "unitedhealth")
-        if any(w in cl for w in _org_indicators):
+        cl_words = set(re.split(r"[\s,.\-]+", cl))
+        if cl_words & set(_org_indicators):
             return None
         # Reject prose
         if sum(1 for w in _PROSE_WORDS if w in cl) >= 2:
@@ -534,12 +535,12 @@ def _validate_and_clean_value(field_key: str, raw_value: str) -> str | None:
         return cleaned
 
     # ── Diagnosis code (ICD-10)
-    if key == "diagnosis_code":
+    if key == "diagnosis_codes":
         # ICD-10: letter + digits, optional dot
         codes = []
         for word in value.split():
             clean = word.strip("()[]{}.,;: ")
-            if re.match(r"^[A-Z]\d{2,4}(?:\.\d{0,2})?$", clean.upper()):
+            if re.match(r"^[A-Z]\d{2,4}(?:\.\d{0,4}[A-Z]?)?$", clean.upper()):
                 codes.append(clean.upper())
         if not codes:
             return None
@@ -555,8 +556,8 @@ def _validate_and_clean_value(field_key: str, raw_value: str) -> str | None:
         val_lower = value.lower()
         if any(w in val_lower for w in _PROSE_WORDS):
             return None
-        # Extract numeric portion
-        nums = re.findall(r"\d+", value)
+        # Extract numeric portion (including decimals like 3.5)
+        nums = re.findall(r"\d+(?:\.\d+)?", value)
         if nums:
             return " ".join(nums)
         return None

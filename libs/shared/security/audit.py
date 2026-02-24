@@ -78,8 +78,8 @@ class AuditLogger:
             self._db.add(entry)
             self._db.flush()
         except Exception:
-            logger.warning(
-                "Audit log write failed for %s %s/%s",
+            logger.error(
+                "HIPAA AUDIT FAILURE: audit log write failed for %s %s/%s",
                 action, resource_type, resource_id,
                 exc_info=True,
             )

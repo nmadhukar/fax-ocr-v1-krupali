@@ -26,6 +26,9 @@ def normalize_bbox(
     else:
         x0, y0, x1, y1 = bbox[0], bbox[1], bbox[2], bbox[3]
 
+    if image_width <= 0 or image_height <= 0:
+        return {"x0": 0.0, "y0": 0.0, "x1": 0.0, "y1": 0.0}
+
     return {
         "x0": x0 / image_width,
         "y0": y0 / image_height,

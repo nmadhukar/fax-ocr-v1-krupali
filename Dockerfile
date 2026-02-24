@@ -12,7 +12,7 @@
 # ============================================================================
 
 # Stage 1: Builder — install Python dependencies
-FROM python:3.10-slim-bookworm AS builder
+FROM python:3.11-slim-bookworm AS builder
 
 # System deps needed for building native extensions
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -43,7 +43,7 @@ RUN grep -v -E "^(torch|paddlepaddle)" requirements.txt > requirements_filtered.
 # ============================================================================
 # Stage 2: Runtime
 # ============================================================================
-FROM python:3.10-slim-bookworm AS runtime
+FROM python:3.11-slim-bookworm AS runtime
 
 # Runtime system deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -57,7 +57,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy installed Python packages from builder
-COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
 WORKDIR /app
@@ -96,12 +96,16 @@ COPY services/ ./services/
 COPY workers/ ./workers/
 COPY configs/ ./configs/
 COPY scripts/ ./scripts/
-COPY pdfs/ ./pdfs/
 COPY infra/migrations/ ./infra/migrations/
 COPY infra/init-scripts/ ./infra/init-scripts/
 
 # Copy entrypoint
 COPY docker-entrypoint.sh ./docker-entrypoint.sh
 RUN chmod +x ./docker-entrypoint.sh
+
+# Run as non-root user for security
+RUN groupadd -r appuser && useradd -r -g appuser -d /app appuser \
+    && chown -R appuser:appuser /app
+USER appuser
 
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

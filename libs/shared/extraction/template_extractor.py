@@ -681,7 +681,7 @@ class TemplateExtractor:
                 if has_digit and is_code_like:
                     code_parts.append(part)
                 else:
-                    break
+                    continue  # Skip non-code tokens (e.g. "UNITS") between codes
             if code_parts:
                 return " ".join(code_parts)
             return value

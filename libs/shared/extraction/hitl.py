@@ -11,6 +11,7 @@ method=HUMAN_REVIEW and confidence=1.0.
 
 from __future__ import annotations
 
+import copy
 import logging
 from typing import Any
 
@@ -35,7 +36,7 @@ _CRITICAL_FIELDS = {
     "auth_expiration_date",
     "decision",
     "service_code",
-    "diagnosis_code",
+    "diagnosis_codes",
 }
 
 # Per-field threshold table (everything not listed uses _DEFAULT_THRESHOLD)
@@ -97,7 +98,7 @@ def compute_field_flags(
             continue
 
         # Empty value despite having a record
-        if not value or str(value).strip() == "":
+        if value is None or (isinstance(value, str) and not value.strip()):
             flags.append({
                 "field_key": field_key,
                 "reason": REASON_MISSING_VALUE,
@@ -164,7 +165,7 @@ def apply_human_corrections(
     Returns:
         New extraction_json dict with corrections applied.
     """
-    updated = dict(extraction_json)
+    updated = copy.deepcopy(extraction_json)
 
     for field_key, corrected_value in corrections.items():
         existing = updated.get(field_key)
@@ -204,9 +205,8 @@ def apply_human_corrections(
             }
 
         logger.info(
-            "HITL correction applied: field=%s value=%r (conf=1.0, method=HUMAN_REVIEW)",
+            "HITL correction applied: field=%s (conf=1.0, method=HUMAN_REVIEW)",
             field_key,
-            corrected_value,
         )
 
     return updated

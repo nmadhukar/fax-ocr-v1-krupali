@@ -202,10 +202,17 @@ class ApiSettings(BaseSettings):
 
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8000)
-    debug: bool = Field(default=True)
+    debug: bool = Field(default=False)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(default="INFO")
     allowed_origins: list[str] = Field(
-        default=["http://localhost:3000", "http://localhost:8000"]
+        default=[
+            "http://localhost:3000",
+            "http://localhost:5173",
+            "http://localhost:8000",
+            "http://localhost:8001",
+            "http://localhost:8002",
+            "http://localhost:8003",
+        ]
     )
     allowed_hosts: list[str] = Field(
         default=["*"],
@@ -290,6 +297,10 @@ _INSECURE_DEFAULTS = {
     "changeme",
     "secret",
     "password",
+    "test",
+    "admin",
+    "default",
+    "12345678",
 }
 
 
@@ -319,6 +330,11 @@ def get_settings() -> Settings:
             raise RuntimeError(
                 "FATAL: SECRET_KEY is still set to a default value. "
                 "Set the SECRET_KEY environment variable to a secure random value."
+            )
+        if len(secret_val) < 32:
+            raise RuntimeError(
+                "FATAL: SECRET_KEY must be at least 32 characters in production. "
+                "Use: python -c \"import secrets; print(secrets.token_urlsafe(48))\""
             )
         minio_secret = settings.minio.secret_key.get_secret_value()
         if minio_secret in ("minioadmin123", "minioadmin"):

@@ -10,6 +10,7 @@ payers:
       - prior_auth_number
       - auth_effective_date
       - auth_expiration_date
+      - decision
 
     field_validations:
       member_id:
@@ -74,6 +75,7 @@ payers:
       - prior_auth_number
       - auth_effective_date
       - service_code
+      - decision
 
     field_validations:
       member_id:
@@ -114,6 +116,7 @@ payers:
       - member_id
       - prior_auth_number
       - auth_effective_date
+      - decision
 
     field_validations:
       member_id:
@@ -145,6 +148,7 @@ payers:
     critical_fields:
       - member_id
       - prior_auth_number
+      - decision
 
     field_validations:
       member_id:
@@ -169,6 +173,7 @@ payers:
     critical_fields:
       - member_id
       - prior_auth_number
+      - decision
 
     field_validations:
       member_id:
@@ -184,6 +189,7 @@ payers:
     critical_fields:
       - member_id
       - prior_auth_number
+      - decision
 
     field_validations:
       member_id:
@@ -199,6 +205,7 @@ payers:
     critical_fields:
       - member_id
       - prior_auth_number
+      - decision
 
     field_validations:
       member_id:
@@ -214,6 +221,7 @@ payers:
     critical_fields:
       - member_id
       - prior_auth_number
+      - decision
 
     field_validations:
       member_id:
@@ -246,6 +254,7 @@ payers:
       - member_id
       - prior_auth_number
       - auth_effective_date
+      - decision
 
     field_validations:
       member_id:
@@ -278,6 +287,7 @@ payers:
     critical_fields:
       - member_id
       - prior_auth_number
+      - decision
 
     field_validations:
       member_id:

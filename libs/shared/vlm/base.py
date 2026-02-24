@@ -21,6 +21,7 @@ class VlmConfig:
     max_image_size_px: int = 2048
     use_gpu: bool = False
     max_new_tokens: int = 512
+    adapter_path: str | None = None
 
 
 @dataclass

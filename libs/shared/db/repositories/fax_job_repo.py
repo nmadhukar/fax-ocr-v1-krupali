@@ -110,21 +110,36 @@ class FaxJobRepository(BaseRepository[FaxJob]):
 
     def get_pending_jobs(self, limit: int = 10) -> list[FaxJob]:
         """
-        Get pending jobs for processing.
+        Atomically fetch pending jobs and mark them PROCESSING.
+
+        Uses SELECT ... FOR UPDATE SKIP LOCKED so concurrent workers
+        cannot grab the same job.  The status is set to PROCESSING
+        within the same lock window (before flush releases the row lock).
 
         Args:
             limit: Maximum jobs to return.
 
         Returns:
-            List of pending FaxJob instances.
+            List of FaxJob instances now marked PROCESSING.
         """
         stmt = (
             select(FaxJob)
             .where(FaxJob.status == FaxJobStatusEnum.PENDING)
             .order_by(FaxJob.created_at.asc())
             .limit(limit)
+            .with_for_update(skip_locked=True)
         )
-        return list(self.db.execute(stmt).scalars().all())
+        jobs = list(self.db.execute(stmt).scalars().all())
+
+        # Mark as PROCESSING while rows are still locked
+        for job in jobs:
+            job.status = FaxJobStatusEnum.PROCESSING
+            job.processing_started_at = datetime.now(timezone.utc)
+
+        if jobs:
+            self.db.flush()
+
+        return jobs
 
     def get_jobs_needing_review(
         self,
@@ -206,8 +221,13 @@ class FaxJobRepository(BaseRepository[FaxJob]):
 
         if status == FaxJobStatusEnum.PROCESSING:
             job.processing_started_at = datetime.now(timezone.utc)
+        elif status == FaxJobStatusEnum.NEEDS_REVIEW:
+            job.needs_review = True
         elif status in (FaxJobStatusEnum.COMPLETED, FaxJobStatusEnum.FAILED):
-            job.processing_completed_at = datetime.now(timezone.utc)
+            if job.processing_completed_at is None:
+                job.processing_completed_at = datetime.now(timezone.utc)
+            if status == FaxJobStatusEnum.COMPLETED:
+                job.needs_review = False
 
         self.db.flush()
         return job
@@ -263,7 +283,7 @@ class FaxJobRepository(BaseRepository[FaxJob]):
         job.status = FaxJobStatusEnum.FAILED
         job.processing_completed_at = datetime.now(timezone.utc)
         if error:
-            job.job_metadata = {**job.job_metadata, "error": error}
+            job.job_metadata = {**(job.job_metadata or {}), "error": error}
 
         self.db.flush()
         return job
@@ -295,11 +315,17 @@ class FaxJobRepository(BaseRepository[FaxJob]):
         self.db.flush()
         return job
 
-    def count_by_tenant(self, tenant_id: str | None) -> int:
-        """Count jobs for a tenant. None = all tenants."""
+    def count_by_tenant(
+        self,
+        tenant_id: str | None,
+        status: FaxJobStatusEnum | None = None,
+    ) -> int:
+        """Count jobs for a tenant with optional status filter. None tenant = all tenants."""
         stmt = select(func.count()).select_from(FaxJob)
         if tenant_id is not None:
             stmt = stmt.where(FaxJob.tenant_id == tenant_id)
+        if status is not None:
+            stmt = stmt.where(FaxJob.status == status)
         return self.db.execute(stmt).scalar() or 0
 
     def count_by_status(self, tenant_id: str) -> dict[str, int]:
