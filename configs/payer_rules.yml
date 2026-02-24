@@ -1,0 +1,332 @@
+# Healthcare Fax Processing System - Payer Rules Configuration
+# Version: 1.0.0
+# Description: Payer-specific validation rules, canonicalization, and confidence thresholds
+
+payers:
+  ANTHEM:
+    display_name: "Anthem Blue Cross Blue Shield"
+    critical_fields:
+      - member_id
+      - prior_auth_number
+      - auth_effective_date
+      - auth_expiration_date
+
+    field_validations:
+      member_id:
+        regex: '^[A-Z0-9]{8,14}$'
+        description: "8-14 alphanumeric characters"
+        min_length: 8
+        max_length: 14
+
+      prior_auth_number:
+        regex: '^[A-Z0-9]{6,15}$'
+        description: "6-15 alphanumeric characters"
+        min_length: 6
+        max_length: 15
+
+      auth_effective_date:
+        format: "MM/DD/YYYY"
+        validate_not_future: true
+
+      auth_expiration_date:
+        format: "MM/DD/YYYY"
+        validate_after_effective: true
+
+      npi:
+        regex: '^\d{10}$'
+        description: "10 digit NPI"
+
+      phone:
+        regex: '^\(\d{3}\) \d{3}-\d{4}$|^\d{10}$'
+        description: "US phone number"
+
+    confidence_thresholds:
+      member_id: 0.90
+      prior_auth_number: 0.85
+      auth_effective_date: 0.80
+      auth_expiration_date: 0.80
+      patient_name: 0.85
+      provider_name: 0.80
+      npi: 0.90
+
+    canonicalization:
+      member_id:
+        uppercase: true
+        remove_spaces: true
+        remove_dashes: true
+
+      prior_auth_number:
+        uppercase: true
+        remove_spaces: true
+
+      dates:
+        standard_format: "YYYY-MM-DD"
+        accept_formats:
+          - "MM/DD/YYYY"
+          - "MM-DD-YYYY"
+          - "YYYY-MM-DD"
+          - "MM/DD/YY"
+
+  UNITED_HEALTH:
+    display_name: "UnitedHealthcare"
+    critical_fields:
+      - member_id
+      - prior_auth_number
+      - auth_effective_date
+      - service_code
+
+    field_validations:
+      member_id:
+        regex: '^[A-Z0-9]{9,12}$'
+        description: "9-12 alphanumeric characters"
+        min_length: 9
+        max_length: 12
+
+      prior_auth_number:
+        regex: '^[A-Z0-9]{8,15}$'
+        description: "8-15 alphanumeric characters"
+
+      service_code:
+        regex: '^\d{5}$'
+        description: "5 digit CPT code"
+
+    confidence_thresholds:
+      member_id: 0.88
+      prior_auth_number: 0.85
+      auth_effective_date: 0.80
+      service_code: 0.90
+
+    canonicalization:
+      member_id:
+        uppercase: true
+        remove_spaces: true
+
+      dates:
+        standard_format: "YYYY-MM-DD"
+        accept_formats:
+          - "MM/DD/YYYY"
+          - "MM-DD-YYYY"
+          - "YYYY-MM-DD"
+
+  HUMANA:
+    display_name: "Humana"
+    critical_fields:
+      - member_id
+      - prior_auth_number
+      - auth_effective_date
+
+    field_validations:
+      member_id:
+        regex: '^[A-Z0-9]{8,14}$'
+        description: "8-14 alphanumeric characters"
+
+      prior_auth_number:
+        regex: '^[A-Z0-9]{6,15}$'
+        description: "6-15 alphanumeric characters"
+
+    confidence_thresholds:
+      member_id: 0.90
+      prior_auth_number: 0.85
+      auth_effective_date: 0.80
+
+    canonicalization:
+      member_id:
+        uppercase: true
+        remove_spaces: true
+
+      dates:
+        standard_format: "YYYY-MM-DD"
+        accept_formats:
+          - "MM/DD/YYYY"
+          - "MM-DD-YYYY"
+
+  MOLINA:
+    display_name: "Molina Healthcare"
+    critical_fields:
+      - member_id
+      - prior_auth_number
+
+    field_validations:
+      member_id:
+        regex: '^[0-9]{10,12}$'
+        description: "10-12 digits"
+
+      prior_auth_number:
+        regex: '^[A-Z0-9]{6,15}$'
+        description: "6-15 alphanumeric characters"
+
+    confidence_thresholds:
+      member_id: 0.88
+      prior_auth_number: 0.85
+
+    canonicalization:
+      member_id:
+        remove_spaces: true
+        remove_dashes: true
+
+  CARESOURCE:
+    display_name: "CareSource"
+    critical_fields:
+      - member_id
+      - prior_auth_number
+
+    field_validations:
+      member_id:
+        regex: '^[A-Z0-9]{10,14}$'
+        description: "10-14 alphanumeric"
+
+    confidence_thresholds:
+      member_id: 0.88
+      prior_auth_number: 0.85
+
+  BUCKEYE:
+    display_name: "Buckeye Health Plan"
+    critical_fields:
+      - member_id
+      - prior_auth_number
+
+    field_validations:
+      member_id:
+        regex: '^[0-9]{10}$'
+        description: "10 digits"
+
+    confidence_thresholds:
+      member_id: 0.88
+      prior_auth_number: 0.85
+
+  AMERIHEALTH:
+    display_name: "AmeriHealth Caritas"
+    critical_fields:
+      - member_id
+      - prior_auth_number
+
+    field_validations:
+      member_id:
+        regex: '^[A-Z0-9]{6,12}(-[0-9]{1,4})?$'
+        description: "6-12 alphanumeric with optional hyphen-suffix (e.g. 82353822-01)"
+
+    confidence_thresholds:
+      member_id: 0.88
+      prior_auth_number: 0.85
+
+  AETNA:
+    display_name: "Aetna"
+    critical_fields:
+      - member_id
+      - prior_auth_number
+
+    field_validations:
+      member_id:
+        regex: '^[A-Z0-9]{8,14}$'
+        description: "8-14 alphanumeric"
+
+      prior_auth_number:
+        regex: '^[A-Z0-9]{8,15}$'
+        description: "8-15 alphanumeric"
+
+    confidence_thresholds:
+      member_id: 0.88
+      prior_auth_number: 0.85
+
+    canonicalization:
+      member_id:
+        uppercase: true
+        remove_spaces: true
+
+      dates:
+        standard_format: "YYYY-MM-DD"
+        accept_formats:
+          - "MM/DD/YYYY"
+          - "MM-DD-YYYY"
+          - "YYYY-MM-DD"
+
+  PARAMOUNT:
+    display_name: "Paramount Advantage"
+    critical_fields:
+      - member_id
+      - prior_auth_number
+      - auth_effective_date
+
+    field_validations:
+      member_id:
+        regex: '^[A-Z0-9]{8,14}$'
+        description: "8-14 alphanumeric characters"
+
+      prior_auth_number:
+        regex: '^[A-Z0-9]{6,15}$'
+        description: "6-15 alphanumeric characters"
+
+    confidence_thresholds:
+      member_id: 0.88
+      prior_auth_number: 0.85
+      auth_effective_date: 0.80
+
+    canonicalization:
+      member_id:
+        remove_spaces: true
+        remove_dashes: true
+
+      dates:
+        standard_format: "YYYY-MM-DD"
+        accept_formats:
+          - "MM/DD/YYYY"
+          - "MM-DD-YYYY"
+          - "YYYY-MM-DD"
+
+  PROMEDICA:
+    display_name: "ProMedica"
+    critical_fields:
+      - member_id
+      - prior_auth_number
+
+    field_validations:
+      member_id:
+        regex: '^[0-9]{8,12}$'
+        description: "8-12 digits"
+
+    confidence_thresholds:
+      member_id: 0.88
+      prior_auth_number: 0.85
+
+    canonicalization:
+      member_id:
+        remove_spaces: true
+        remove_dashes: true
+
+# Common configuration across all payers
+fuzzy_matching:
+  levenshtein_threshold: 2
+  min_token_length: 3
+  case_sensitive: false
+
+cover_page_keywords:
+  - "cover sheet"
+  - "fax cover"
+  - "transmittal"
+  - "confidential notice"
+  - "facsimile"
+  - "confidentiality notice"
+  - "privileged communication"
+  - "intended recipient"
+
+# Default confidence thresholds
+default_thresholds:
+  auto_finalize: 0.90
+  field_min: 0.70
+  critical_field_min: 0.85
+
+# Field type definitions
+field_types:
+  member_id: "member_id"
+  prior_auth_number: "text"
+  auth_effective_date: "date"
+  auth_expiration_date: "date"
+  patient_name: "text"
+  patient_dob: "date"
+  provider_name: "text"
+  provider_npi: "npi"
+  provider_phone: "phone"
+  provider_fax: "phone"
+  diagnosis_code: "text"
+  service_code: "text"
+  units_requested: "number"

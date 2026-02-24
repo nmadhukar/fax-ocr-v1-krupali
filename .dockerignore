@@ -1,0 +1,47 @@
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Output & caches
+output/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+
+# Tests (not needed in production image)
+tests/
+
+# Local env files (Docker uses .env.docker)
+.env
+.env.example
+.env.production
+
+# OS files
+*.swp
+*.swo
+Thumbs.db
+.DS_Store
+
+# Docs (not needed in runtime)
+docs/
+*.md
+!README.md
+
+# Dev/debug extras (not needed in production image)
+extras/
+
+# Node (if any)
+node_modules/

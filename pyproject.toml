@@ -1,0 +1,95 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "healthcare-fax-processor"
+version = "1.0.0"
+description = "Production-ready, HIPAA-grade multi-tenant fax processing system"
+readme = "README.md"
+license = {text = "Proprietary"}
+requires-python = ">=3.11"
+authors = [
+    {name = "Healthcare Fax Team"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Healthcare Industry",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+
+dependencies = [
+    "fastapi==0.109.0",
+    "uvicorn[standard]==0.27.0",
+    "pydantic==2.5.3",
+    "pydantic-settings==2.1.0",
+    "sqlalchemy==2.0.25",
+    "psycopg2-binary==2.9.9",
+    "alembic==1.13.1",
+    "celery==5.3.4",
+    "redis==5.0.1",
+    "minio==7.2.3",
+    "paddleocr==2.7.0.3",
+    "paddlepaddle==2.6.0",
+    "opencv-python==4.9.0.80",
+    "opencv-contrib-python==4.9.0.80",
+    "Pillow==10.2.0",
+    "pdf2image==1.17.0",
+    "pypdf==3.17.4",
+    "PyMuPDF==1.23.8",
+    "scikit-image==0.22.0",
+    "imagehash==4.3.1",
+    "numpy==1.26.3",
+    "scipy==1.12.0",
+    "transformers==4.36.2",
+    "torch==2.1.2",
+    "python-multipart==0.0.6",
+    "pyyaml==6.0.1",
+    "Levenshtein==0.23.0",
+    "structlog==24.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==7.4.4",
+    "pytest-asyncio==0.23.3",
+    "httpx==0.26.0",
+    "mypy==1.8.0",
+    "ruff==0.1.11",
+    "black==23.12.1",
+    "isort==5.13.2",
+    "pre-commit==3.6.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["libs*", "services*", "workers*"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+plugins = ["pydantic.mypy"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
+ignore = ["E501"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
