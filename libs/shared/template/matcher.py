@@ -36,6 +36,9 @@ class MatchResult:
     orb_matches: int = 0
     orb_inliers: int = 0
     matched_page_number: int | None = None
+    candidate_count: int = 0
+    match_mode: str = "strict"
+    adaptive_used: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -49,6 +52,9 @@ class MatchResult:
             "orb_matches": self.orb_matches,
             "orb_inliers": self.orb_inliers,
             "matched_page_number": self.matched_page_number,
+            "candidate_count": self.candidate_count,
+            "match_mode": self.match_mode,
+            "adaptive_used": self.adaptive_used,
         }
 
 
@@ -133,6 +139,8 @@ class TemplateMatcher:
                 template_name=None,
                 payer_name=None,
                 score=0.0,
+                candidate_count=0,
+                match_mode="single_page",
             )
 
         # Sort candidates by pHash distance
@@ -181,6 +189,8 @@ class TemplateMatcher:
                             phash_distance=phash_dist,
                             orb_matches=orb_result.num_matches,
                             orb_inliers=orb_result.num_inliers,
+                            candidate_count=len(candidates),
+                            match_mode="single_page",
                         )
 
         if best_result:
@@ -193,6 +203,8 @@ class TemplateMatcher:
             template_name=None,
             payer_name=None,
             score=best_score,
+            candidate_count=len(candidates),
+            match_mode="single_page",
         )
 
     # Adaptive matching: relaxed pHash for near-miss form versions
@@ -234,6 +246,7 @@ class TemplateMatcher:
                 template_name=None,
                 payer_name=None,
                 score=0.0,
+                match_mode="none",
             )
 
         # Get all active template versions + samples
@@ -247,6 +260,7 @@ class TemplateMatcher:
                 template_name=None,
                 payer_name=None,
                 score=0.0,
+                match_mode="none",
             )
 
         # Filter by payer hint
@@ -284,6 +298,7 @@ class TemplateMatcher:
                 result.phash_distance,
                 result.orb_inliers,
             )
+            result.match_mode = "strict"
             return result
 
         # --- Pass 2: Adaptive matching (relaxed pHash, stricter ORB) ---
@@ -309,6 +324,8 @@ class TemplateMatcher:
                     adaptive_result.orb_inliers,
                     payer_hint,
                 )
+                adaptive_result.match_mode = "adaptive"
+                adaptive_result.adaptive_used = True
                 return adaptive_result
 
         return MatchResult(
@@ -317,6 +334,7 @@ class TemplateMatcher:
             template_name=None,
             payer_name=None,
             score=0.0,
+            match_mode="none",
         )
 
     def _match_pages_with_threshold(
@@ -364,6 +382,7 @@ class TemplateMatcher:
                 template_name=None,
                 payer_name=None,
                 score=0.0,
+                candidate_count=0,
             )
 
         # Sort by pHash distance (best first)
@@ -415,6 +434,7 @@ class TemplateMatcher:
                             orb_matches=orb_result.num_matches,
                             orb_inliers=orb_result.num_inliers,
                             matched_page_number=page_num,
+                            candidate_count=len(phash_candidates),
                         )
 
         if best_result:
@@ -426,6 +446,7 @@ class TemplateMatcher:
             template_name=None,
             payer_name=None,
             score=best_score,
+            candidate_count=len(phash_candidates),
         )
 
     def compute_template_features(

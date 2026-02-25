@@ -32,6 +32,27 @@ logger = logging.getLogger(__name__)
 # -------------------------------------------------------------------
 
 _DOC_TYPE_PATTERNS: dict[str, dict[str, list[str]]] = {
+    "PRIOR_AUTH_FORM": {
+        "strong": [
+            r"(?i)\bprior\s+authorization\s+request\b",
+            r"(?i)\bservice\s+authorization\s+request\b",
+            r"(?i)\brequest\s+for\s+authorization\b",
+            r"(?i)\brequesting\s+provider\b",
+            r"(?i)\bmember\s+id\b",
+        ],
+        "weak": [
+            r"(?i)\bservice\s+code\b",
+            r"(?i)\bunits?\s+requested\b",
+            r"(?i)\bdiagnosis\s+code\b",
+            r"(?i)\bclinical\s+information\b",
+        ],
+        "negative": [
+            r"(?i)authorization\s+(?:has\s+been\s+)?approved",
+            r"(?i)authorization\s+(?:has\s+been\s+)?denied",
+            r"(?i)denial\s+(?:notification|notice|letter)",
+            r"(?i)approval[\s.]*notification",
+        ],
+    },
     "PRIOR_AUTH_APPROVAL": {
         "strong": [
             r"(?i)authorization\s+(?:has\s+been\s+)?approved",
@@ -137,6 +158,46 @@ _DOC_TYPE_PATTERNS: dict[str, dict[str, list[str]]] = {
         ],
         "negative": [],
     },
+    "HIPAA_RELEASE": {
+        "strong": [
+            r"(?i)\bauthorization\s+for\s+release\s+of\s+information\b",
+            r"(?i)\brelease\s+of\s+information\b",
+            r"(?i)\bdisclosure\s+of\s+protected\s+health\s+information\b",
+            r"(?i)\bhipaa\s+authorization\b",
+            r"(?i)\brecipient\s+of\s+information\b",
+            r"(?i)\bpurpose\s+of\s+disclosure\b",
+        ],
+        "weak": [
+            r"(?i)\bpatient\s+signature\b",
+            r"(?i)\bauthorization\s+expires?\b",
+            r"(?i)\brevoke\s+this\s+authorization\b",
+            r"(?i)\bmedical\s+records?\s+request\b",
+        ],
+        "negative": [
+            r"(?i)\bprior\s+authorization\s+request\b",
+            r"(?i)\bauthorization\s+status\b",
+            r"(?i)\bdecision:\s*(?:approved|denied)\b",
+        ],
+    },
+    "LAB_RESULTS": {
+        "strong": [
+            r"(?i)\blaboratory\s+results?\b",
+            r"(?i)\btest\s+name\b",
+            r"(?i)\breference\s+range\b",
+            r"(?i)\bcollected\s+date\b",
+            r"(?i)\bresult\s+value\b",
+        ],
+        "weak": [
+            r"(?i)\bhemoglobin\b",
+            r"(?i)\bplatelet\b",
+            r"(?i)\bcreatinine\b",
+            r"(?i)\bnormal\s+range\b",
+        ],
+        "negative": [
+            r"(?i)\bprior\s+authorization\b",
+            r"(?i)\bappeal\s+rights?\b",
+        ],
+    },
     "CLINICAL_NOTES": {
         "strong": [
             r"(?i)(?:clinical|progress|physician|nursing)\s+notes?",
@@ -165,9 +226,12 @@ _DOC_TYPE_PATTERNS: dict[str, dict[str, list[str]]] = {
 
 # Map internal keys → DocTypeEnum values
 _KEY_TO_ENUM: dict[str, DocTypeEnum] = {
+    "PRIOR_AUTH_FORM": DocTypeEnum.PRIOR_AUTH_FORM,
     "PRIOR_AUTH_APPROVAL": DocTypeEnum.PRIOR_AUTH_APPROVAL,
     "PRIOR_AUTH_DENIAL": DocTypeEnum.PRIOR_AUTH_DENIAL,
     "PEER_TO_PEER_DENIAL": DocTypeEnum.PEER_TO_PEER_DENIAL,
+    "HIPAA_RELEASE": DocTypeEnum.HIPAA_RELEASE,
+    "LAB_RESULTS": DocTypeEnum.LAB_RESULTS,
     "FAX_COVER_SHEET": DocTypeEnum.FAX_COVER_SHEET,
     "CLINICAL_NOTES": DocTypeEnum.CLINICAL_NOTES,
     "OTHER": DocTypeEnum.OTHER,

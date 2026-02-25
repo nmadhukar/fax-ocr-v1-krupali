@@ -100,6 +100,7 @@ class TemplateExtractor:
         template_version_id: UUID,
         page_id_map: dict[int, UUID],
         db: Session,
+        field_page_overrides: dict[str, set[int]] | None = None,
     ) -> list[ExtractionResult]:
         """
         Extract all fields using label-anchored strategy with ROI fallback.
@@ -126,33 +127,75 @@ class TemplateExtractor:
                 all_tokens_by_page[page_num] = _normalize_tokens(db_tokens)
 
         for field in fields:
+            override_pages = (
+                set(field_page_overrides.get(field.field_key, []))
+                if field_page_overrides
+                else set()
+            )
+            candidate_pages = [field.target_page] + sorted(
+                p for p in override_pages if p != field.target_page
+            )
+
+            # Keep only pages that exist in this job.
+            candidate_pages = [p for p in candidate_pages if p in page_id_map]
+
             page_id = page_id_map.get(field.target_page)
-            if page_id is None:
-                results.append(ExtractionResult(
+            if page_id is None and not candidate_pages:
+                results.append(
+                    ExtractionResult(
+                        field_key=field.field_key,
+                        value=None,
+                        confidence=0.0,
+                        evidence_bbox=None,
+                        evidence_text=None,
+                        token_ids=[],
+                    )
+                )
+                continue
+
+            # Get label aliases from template or fall back to global aliases.
+            label_aliases = self._get_label_aliases(field)
+            result = None
+
+            # Try anchor-relative then label-anchored extraction on preferred pages.
+            for page_num in candidate_pages:
+                page_tokens = all_tokens_by_page.get(page_num, [])
+                if not page_tokens:
+                    continue
+
+                anchor_result = self._extract_anchor_relative(
+                    field=field,
+                    page_num=page_num,
+                    tokens=page_tokens,
+                )
+                if anchor_result and anchor_result.value:
+                    result = anchor_result
+                    break
+
+                if label_aliases:
+                    label_result = self._extract_label_anchored(
+                        field=field,
+                        label_aliases=label_aliases,
+                        tokens=page_tokens,
+                        page_num=page_num,
+                    )
+                    if label_result and label_result.value:
+                        result = label_result
+                        break
+
+            # Fall back to ROI extraction if anchor/label strategies failed.
+            if (result is None or result.value is None) and page_id is not None:
+                result = self.extract_field(field, page_id, token_repo)
+
+            if result is None:
+                result = ExtractionResult(
                     field_key=field.field_key,
                     value=None,
                     confidence=0.0,
                     evidence_bbox=None,
                     evidence_text=None,
                     token_ids=[],
-                ))
-                continue
-
-            # Get label aliases from template or fall back to global aliases
-            label_aliases = self._get_label_aliases(field)
-            page_tokens = all_tokens_by_page.get(field.target_page, [])
-
-            # Try label-anchored extraction first
-            result = None
-            if label_aliases and page_tokens:
-                result = self._extract_label_anchored(
-                    field, label_aliases, page_tokens
                 )
-
-            # Fall back to ROI extraction if label-anchored failed
-            if result is None or result.value is None:
-                result = self.extract_field(field, page_id, token_repo)
-
             results.append(result)
 
         return results
@@ -184,11 +227,129 @@ class TemplateExtractor:
 
         return aliases
 
+    def _get_anchor_config(self, field: FaxTemplateField) -> dict[str, Any]:
+        """Return normalized anchor config from field.post_processing."""
+        post_proc = field.post_processing or {}
+        anchor = post_proc.get("anchor", {})
+        if not isinstance(anchor, dict):
+            return {}
+
+        aliases = anchor.get("aliases", [])
+        if isinstance(aliases, str):
+            aliases = [aliases]
+        aliases = [a for a in aliases if isinstance(a, str) and a.strip()]
+
+        direction = str(anchor.get("direction", "right")).lower().strip()
+        if direction not in {"right", "below"}:
+            direction = "right"
+
+        max_tokens_raw = anchor.get("max_tokens", 4)
+        try:
+            max_tokens = max(1, min(12, int(max_tokens_raw)))
+        except Exception:
+            max_tokens = 4
+
+        return {
+            "aliases": aliases,
+            "direction": direction,
+            "max_tokens": max_tokens,
+        }
+
+    def _extract_anchor_relative(
+        self,
+        field: FaxTemplateField,
+        page_num: int,
+        tokens: list[OcrTokenSimple],
+    ) -> ExtractionResult | None:
+        """
+        Extract value relative to a configured anchor.
+
+        Anchor config lives in field.post_processing["anchor"]:
+          {
+            "aliases": ["Requesting Provider Name", ...],
+            "direction": "right" | "below",
+            "max_tokens": 6
+          }
+        """
+        anchor_cfg = self._get_anchor_config(field)
+        aliases = anchor_cfg.get("aliases", [])
+        if not aliases:
+            return None
+
+        canon_labels = [a.lower().strip() for a in aliases if a.strip()]
+        anchor_tokens, score = self._find_label_tokens(canon_labels, tokens)
+        if not anchor_tokens or score < 0.5:
+            return None
+
+        anchor_x0 = min(t.x0 for t in anchor_tokens)
+        anchor_x1 = max(t.x1 for t in anchor_tokens)
+        anchor_y0 = min(t.y0 for t in anchor_tokens)
+        anchor_y1 = max(t.y1 for t in anchor_tokens)
+        row_height = max(anchor_y1 - anchor_y0, 0.01)
+
+        direction = anchor_cfg.get("direction", "right")
+        if direction == "below":
+            value_tokens = self._collect_below_tokens(
+                all_tokens=tokens,
+                label_tokens=anchor_tokens,
+                label_x0=anchor_x0,
+                label_x1=anchor_x1,
+                label_y1=anchor_y1,
+                row_height=row_height,
+            )
+        else:
+            roi_max_x = min(1.0, float(field.roi_x1) + 0.08)
+            value_tokens = self._collect_right_tokens(
+                all_tokens=tokens,
+                label_tokens=anchor_tokens,
+                label_x1=anchor_x1,
+                label_y0=anchor_y0,
+                row_height=row_height,
+                max_x=roi_max_x,
+            )
+
+        max_tokens = int(anchor_cfg.get("max_tokens", 4))
+        value_tokens = value_tokens[:max_tokens]
+        value_tokens = _filter_tokens_by_field_type(field.field_key, value_tokens)
+        if not value_tokens:
+            return None
+
+        value_text = " ".join(t.text for t in value_tokens).strip()
+        if not value_text:
+            return None
+
+        value_text = self._trim_value_by_type(field.field_key, value_text)
+        if not value_text:
+            return None
+
+        confidence = min(
+            1.0,
+            self._compute_confidence(value_tokens, field, is_label_anchored=True) + 0.04,
+        )
+        evidence_bbox = {
+            "x0": min(t.x0 for t in value_tokens),
+            "y0": min(t.y0 for t in value_tokens),
+            "x1": max(t.x1 for t in value_tokens),
+            "y1": max(t.y1 for t in value_tokens),
+            "page": page_num,
+        }
+
+        return ExtractionResult(
+            field_key=field.field_key,
+            value=value_text,
+            confidence=confidence,
+            evidence_bbox=evidence_bbox,
+            evidence_text=value_text,
+            token_ids=[],
+            extraction_strategy="anchor_relative",
+        )
+
     def _extract_label_anchored(
         self,
         field: FaxTemplateField,
         label_aliases: list[str],
         tokens: list[OcrTokenSimple],
+        page_num: int,
     ) -> ExtractionResult | None:
         """
         Find the field label in OCR tokens and extract the value relative to it.
@@ -238,7 +399,7 @@ class TemplateExtractor:
                     "y0": best_label_tokens[-1].y0,
                     "x1": best_label_tokens[-1].x1,
                     "y1": best_label_tokens[-1].y1,
-                    "page": field.target_page,
+                    "page": page_num,
                 }
                 return ExtractionResult(
                     field_key=field.field_key,
@@ -299,7 +460,7 @@ class TemplateExtractor:
             "y0": min(t.y0 for t in value_tokens),
             "x1": max(t.x1 for t in value_tokens),
             "y1": max(t.y1 for t in value_tokens),
-            "page": field.target_page,
+            "page": page_num,
         }
 
         # Sanity check bbox
@@ -368,7 +529,7 @@ class TemplateExtractor:
                     # Multi-word: find tokens on same/adjacent lines
                     matched = []
                     words_found = 0
-                    for j in range(i, min(i + len(label_words) + 5, len(tokens))):
+                    for j in range(i, min(i + len(label_words) + 2, len(tokens))):
                         t = tokens[j]
                         if matched and abs(t.line_number - matched[0].line_number) > 1:
                             break

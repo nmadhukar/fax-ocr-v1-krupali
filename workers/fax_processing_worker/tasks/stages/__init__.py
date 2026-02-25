@@ -109,12 +109,17 @@ class PipelineContext:
     # ── Document classification ──────────────────────────────────────
     doc_class_meta: dict[str, Any] | None = None
     decision_value: str | None = None
+    page_sections: dict[int, str] = field(default_factory=dict)
+    page_section_scores: dict[int, dict[str, float]] = field(default_factory=dict)
+    field_allowed_pages: dict[str, set[int]] = field(default_factory=dict)
 
     # ── Extraction ───────────────────────────────────────────────────
     candidates_by_field: dict[str, list[ExtractionCandidate]] = field(default_factory=dict)
     raw_candidates_by_field: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     extraction_results: list = field(default_factory=list)
     extracted_fields: dict[str, dict[str, Any]] = field(default_factory=dict)
+    adjudication_meta: dict[str, Any] | None = None
+    template_drift_meta: dict[str, Any] | None = None
 
     # ── LayoutLM / VLM metadata ──────────────────────────────────────
     vlm_extraction_meta: dict[str, Any] | None = None

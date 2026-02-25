@@ -181,6 +181,7 @@ def process_fax_task(self, fax_job_id: str, tenant_id: str) -> dict[str, Any]:
             classification.match_template(ctx)
             classification.apply_page_rotation(ctx)
             classification.classify_document(ctx)
+            classification.route_page_sections(ctx)
 
             # ── Stage 3: Extraction (steps 8–9c) ────────────────────
             extraction.template_extraction(ctx)
@@ -188,6 +189,7 @@ def process_fax_task(self, fax_job_id: str, tenant_id: str) -> dict[str, Any]:
             extraction.layoutlm_extraction(ctx)
             extraction.add_decision_from_classifier(ctx)
             extraction.vlm_prescreening(ctx)
+            extraction.hard_field_adjudication(ctx)
 
             # ── Stage 4: Post-processing (steps 10–10d) ─────────────
             post_processing.merge_fields(ctx)

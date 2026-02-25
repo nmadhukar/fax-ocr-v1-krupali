@@ -608,6 +608,36 @@ curl http://localhost:8002/v1/templates/
 
 ---
 
+### `POST /v1/templates/versions/{version_id}/fields`
+
+Create a template field definition (ROI + optional anchor configuration).
+
+**Request body:**
+
+```json
+{
+  "field_key": "provider_name",
+  "field_label": "Requesting Provider Name",
+  "is_required": true,
+  "roi_x0": 0.08,
+  "roi_y0": 0.42,
+  "roi_x1": 0.72,
+  "roi_y1": 0.48,
+  "target_page": 1,
+  "expected_type": "text",
+  "anchor_aliases": ["Requesting Provider Name", "Servicing Provider Name"],
+  "anchor_direction": "right",
+  "anchor_max_tokens": 6
+}
+```
+
+**Anchor fields:**
+- `anchor_aliases`: label aliases used for anchor-relative extraction.
+- `anchor_direction`: `right` or `below`.
+- `anchor_max_tokens`: max tokens captured from anchor window.
+
+---
+
 ### `GET /v1/analytics/quality`
 
 Overall extraction quality metrics across all processed documents.

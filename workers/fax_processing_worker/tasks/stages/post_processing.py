@@ -245,8 +245,11 @@ def _is_reasonable_provider_name(value: str) -> bool:
 
 def merge_fields(ctx: PipelineContext) -> None:
     """Step 10: Multi-source merge via FieldBuilder."""
+    adaptive_cfg = getattr(ctx.settings, "adaptive", None)
     field_builder = FieldBuilder(
         vlm_multiplier=ctx.settings.vlm.layoutlm_score_multiplier,
+        ranker_enabled=bool(getattr(adaptive_cfg, "candidate_ranker_enabled", True)),
+        ranker_model_path=getattr(adaptive_cfg, "candidate_ranker_model_path", None),
     )
 
     for field_key, candidates in ctx.candidates_by_field.items():

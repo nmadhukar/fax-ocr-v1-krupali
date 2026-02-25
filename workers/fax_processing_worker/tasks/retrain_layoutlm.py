@@ -47,6 +47,9 @@ _MIN_NEW_LABELS = int(os.environ.get("RETRAIN_MIN_NEW_LABELS", "20"))
 _DATA_DIR = os.environ.get("RETRAIN_DATA_DIR", "data/training")
 _OUTPUT_DIR = os.environ.get("RETRAIN_OUTPUT_DIR", "models/layoutlm-finetuned")
 _AUTO_PROMOTE = os.environ.get("RETRAIN_AUTO_PROMOTE", "false").lower() == "true"
+_TRAIN_CANDIDATE_RANKER = (
+    os.environ.get("RETRAIN_TRAIN_CANDIDATE_RANKER", "true").lower() == "true"
+)
 _SCRIPTS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "scripts"
 _PYTHON = sys.executable
 
@@ -163,6 +166,12 @@ def check_and_retrain_layoutlm(self) -> dict:
             ["--data-dir", _DATA_DIR, "--output-dir", _OUTPUT_DIR],
             env,
         )
+        if _TRAIN_CANDIDATE_RANKER:
+            _run_step(
+                "train_candidate_ranker.py",
+                ["--output", "models/candidate_ranker/model.json"],
+                env,
+            )
     except subprocess.CalledProcessError as exc:
         logger.error("Re-training pipeline failed at step: %s", exc)
         with get_db_session() as db:

@@ -14,6 +14,7 @@ import numpy as np
 from sqlalchemy import text as sa_text
 
 from libs.shared.db.models.enums import (
+    DocTypeEnum,
     ExtractionMethodEnum,
     PayerNameEnum,
 )
@@ -52,6 +53,8 @@ def detect_payer(ctx: PipelineContext) -> None:
 
 def match_template(ctx: PipelineContext) -> None:
     """Step 6: Template matching (multi-page)."""
+    adaptive_cfg = getattr(ctx.settings, "adaptive", None)
+    drift_enabled = bool(getattr(adaptive_cfg, "template_drift_enabled", False))
     ctx.content_page_images = {}
 
     for page_num in range(1, len(ctx.pages) + 1):
@@ -76,6 +79,13 @@ def match_template(ctx: PipelineContext) -> None:
 
     ctx.match_result = match_result
 
+    if drift_enabled:
+        ctx.template_drift_meta = {
+            "match_result": ctx.match_result.to_dict(),
+            "signals": [],
+            "flagged": False,
+        }
+
     if ctx.match_result.matched:
         ctx.job.matched_template_version_id = ctx.match_result.template_version_id
         ctx.job.matched_template_score = ctx.match_result.score
@@ -93,6 +103,9 @@ def match_template(ctx: PipelineContext) -> None:
             ctx.match_result.template_name,
             ctx.match_result.score,
         )
+    elif drift_enabled and ctx.template_drift_meta is not None:
+        ctx.template_drift_meta["signals"].append("template_not_matched")
+        ctx.template_drift_meta["flagged"] = True
 
 
 def apply_page_rotation(ctx: PipelineContext) -> None:
@@ -190,8 +203,6 @@ def apply_page_rotation(ctx: PipelineContext) -> None:
 
 def classify_document(ctx: PipelineContext) -> None:
     """Step 7: Document classification."""
-    from libs.shared.db.models.enums import DocTypeEnum
-
     if not ctx.all_ocr_text:
         ctx.job.doc_type = DocTypeEnum.UNKNOWN
         ctx.job.doc_type_conf = 0.0
@@ -201,14 +212,104 @@ def classify_document(ctx: PipelineContext) -> None:
 
     doc_classifier = DocClassifier()
     doc_result = doc_classifier.classify(ctx.all_ocr_text)
-    ctx.job.doc_type = doc_result.doc_type
-    ctx.job.doc_type_conf = doc_result.confidence
+    effective_doc_type = doc_result.doc_type
+    effective_conf = float(doc_result.confidence)
+
+    # Self-learning assist: if image/template match is strong, use template doc_type
+    # as a prior when text classifier is uncertain.
+    if (
+        ctx.match_result
+        and ctx.match_result.matched
+        and ctx.match_result.template_version_id
+        and (effective_doc_type in (DocTypeEnum.UNKNOWN, DocTypeEnum.OTHER) or effective_conf < 0.55)
+    ):
+        try:
+            from libs.shared.db.models.fax_template import FaxTemplateVersion
+
+            tv = ctx.db.get(FaxTemplateVersion, ctx.match_result.template_version_id)
+            template_doc_type = tv.template.doc_type if tv and tv.template else None
+            if template_doc_type and template_doc_type != DocTypeEnum.UNKNOWN:
+                effective_doc_type = template_doc_type
+                effective_conf = max(effective_conf, min(0.95, float(ctx.match_result.score)))
+                logger.info(
+                    "Doc classification boosted from template prior: %s (%.2f)",
+                    effective_doc_type.value,
+                    effective_conf,
+                )
+        except Exception:
+            logger.warning(
+                "Template-prior doc classification fallback failed for job %s",
+                str(ctx.job_uuid)[:8],
+                exc_info=True,
+            )
+
+    ctx.job.doc_type = effective_doc_type
+    ctx.job.doc_type_conf = effective_conf
     ctx.decision_value = doc_result.decision_value
     ctx.doc_class_meta = doc_result.to_dict()
+    ctx.doc_class_meta["effective_doc_type"] = effective_doc_type.value
+    ctx.doc_class_meta["effective_confidence"] = effective_conf
 
     logger.info(
         "Doc classification: %s (%.2f via %s)",
-        doc_result.doc_type.value,
-        doc_result.confidence,
+        effective_doc_type.value,
+        effective_conf,
         doc_result.method,
+    )
+
+
+def route_page_sections(ctx: PipelineContext) -> None:
+    """
+    Route pages into sections and derive per-field page allowlists.
+
+    This is additive safety logic to reduce field contamination from
+    appeal/instruction pages while preserving fallback to all pages.
+    """
+    adaptive_cfg = getattr(ctx.settings, "adaptive", None)
+    if not bool(getattr(adaptive_cfg, "section_routing_enabled", False)):
+        return
+
+    from libs.shared.classification.page_section_router import (
+        KEY_FIELDS_SECTION_POLICY,
+        PageSectionRouter,
+    )
+
+    page_texts: dict[int, str] = {}
+    cover_pages: set[int] = set()
+    for page_num in range(1, len(ctx.pages) + 1):
+        if ctx.active_page_numbers and page_num not in ctx.active_page_numbers:
+            continue
+        page_record = ctx.page_repo.get_page_with_tokens(ctx.job_uuid, page_num)
+        if not page_record:
+            continue
+        text = ""
+        if hasattr(page_record, "get_full_text"):
+            try:
+                text = page_record.get_full_text() or ""
+            except Exception:
+                text = ""
+        page_texts[page_num] = text
+        if bool(getattr(page_record, "is_cover_page", False)):
+            cover_pages.add(page_num)
+
+    if not page_texts:
+        return
+
+    router = PageSectionRouter()
+    routed = router.route_pages(page_texts, cover_pages=cover_pages)
+    allowlist = router.build_field_allowlist(
+        routed_pages=routed,
+        candidate_fields=set(KEY_FIELDS_SECTION_POLICY.keys()),
+    )
+
+    ctx.page_sections = {pnum: res.section for pnum, res in routed.items()}
+    ctx.page_section_scores = {pnum: res.scores for pnum, res in routed.items()}
+    ctx.field_allowed_pages = allowlist
+
+    logger.info(
+        "Page routing: %s",
+        ", ".join(
+            f"p{p}={ctx.page_sections.get(p, 'other')}"
+            for p in sorted(ctx.page_sections.keys())
+        ),
     )

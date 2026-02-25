@@ -167,3 +167,34 @@ def determine_review(ctx: PipelineContext) -> None:
         ctx.needs_review = True
         if "CROSS_FIELD_INCONSISTENCY" not in ctx.scoring_result.review_reasons:
             ctx.scoring_result.review_reasons.append("CROSS_FIELD_INCONSISTENCY")
+
+    # Template drift signaling (additive metadata only).
+    adaptive_cfg = getattr(ctx.settings, "adaptive", None)
+    if bool(getattr(adaptive_cfg, "template_drift_enabled", False)):
+        meta = ctx.template_drift_meta or {"signals": [], "flagged": False}
+        signals = list(meta.get("signals", []))
+        match_score = float(
+            ctx.match_result.score if (ctx.match_result and ctx.match_result.matched) else 0.0
+        )
+        if (
+            ctx.match_result
+            and ctx.match_result.matched
+            and match_score < float(getattr(adaptive_cfg, "template_drift_low_match_threshold", 0.72))
+            and "low_match_score" not in signals
+        ):
+            signals.append("low_match_score")
+
+        if (
+            ctx.scoring_result
+            and "MISSING_CRITICAL_FIELDS" in (ctx.scoring_result.review_reasons or [])
+            and "missing_critical_fields" not in signals
+        ):
+            signals.append("missing_critical_fields")
+
+        if ctx.needs_review and "needs_review" not in signals:
+            signals.append("needs_review")
+
+        meta["signals"] = signals
+        meta["flagged"] = bool(signals)
+        meta["match_score"] = match_score
+        ctx.template_drift_meta = meta

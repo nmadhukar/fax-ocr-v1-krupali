@@ -23,6 +23,65 @@ _LAYOUTLM_INFLIGHT_TOKEN: str | None = None
 _LAYOUTLM_INFLIGHT_STARTED_MONO: float = 0.0
 
 
+def _allowed_pages_for_field(ctx: PipelineContext, field_key: str) -> set[int] | None:
+    pages = (getattr(ctx, "field_allowed_pages", None) or {}).get(field_key)
+    if pages:
+        return set(pages)
+    return None
+
+
+def _candidate_page(candidate: ExtractionCandidate | None) -> int | None:
+    if candidate is None:
+        return None
+    bbox = candidate.evidence_bbox or {}
+    page = bbox.get("page")
+    try:
+        return int(page) if page is not None else None
+    except Exception:
+        return None
+
+
+def _is_candidate_allowed_by_routing(
+    ctx: PipelineContext,
+    field_key: str,
+    candidate: ExtractionCandidate | None,
+) -> bool:
+    allowed_pages = _allowed_pages_for_field(ctx, field_key)
+    if not allowed_pages:
+        return True
+
+    page = _candidate_page(candidate)
+    if page is None:
+        # If page attribution is unavailable, fail open to preserve existing behavior.
+        return True
+    return page in allowed_pages
+
+
+def _field_text_window(ctx: PipelineContext, field_key: str) -> str:
+    """Collect OCR text from routed pages for adjudication."""
+    allowed_pages = _allowed_pages_for_field(ctx, field_key)
+    chunks: list[str] = []
+    for page_num in range(1, len(ctx.pages) + 1):
+        if allowed_pages and page_num not in allowed_pages:
+            continue
+        active_pages = getattr(ctx, "active_page_numbers", None)
+        if active_pages and page_num not in active_pages:
+            continue
+        page_record = ctx.page_repo.get_page_with_tokens(ctx.job_uuid, page_num)
+        if not page_record:
+            continue
+        if bool(getattr(page_record, "is_cover_page", False)):
+            continue
+        if hasattr(page_record, "get_full_text"):
+            try:
+                text = page_record.get_full_text() or ""
+            except Exception:
+                text = ""
+            if text:
+                chunks.append(text)
+    return "\n".join(chunks[:3])
+
+
 def _try_acquire_layoutlm_slot(timeout_seconds: int, fax_job_id: str) -> str | None:
     """Acquire the single LayoutLM in-flight slot with stale-run reclamation."""
     global _LAYOUTLM_INFLIGHT_TOKEN, _LAYOUTLM_INFLIGHT_STARTED_MONO
@@ -99,6 +158,7 @@ def template_extraction(ctx: PipelineContext) -> None:
         ctx.match_result.template_version_id,
         ctx.page_id_map,
         ctx.db,
+        field_page_overrides=getattr(ctx, "field_allowed_pages", None),
     )
 
     for result in ctx.extraction_results:
@@ -111,6 +171,13 @@ def template_extraction(ctx: PipelineContext) -> None:
             evidence_bbox=result.evidence_bbox,
             evidence_text=result.evidence_text,
         )
+        if not _is_candidate_allowed_by_routing(ctx, result.field_key, candidate):
+            logger.debug(
+                "Routing dropped template candidate for %s on page %s",
+                result.field_key,
+                (candidate.evidence_bbox or {}).get("page"),
+            )
+            continue
         ctx.candidates_by_field.setdefault(result.field_key, []).append(candidate)
         ctx.raw_candidates_by_field.setdefault(result.field_key, []).append(
             candidate.to_dict()
@@ -159,7 +226,36 @@ def ocr_label_extraction(ctx: PipelineContext) -> None:
         payer_name=ctx.payer_str,
     )
 
+    # Re-query routed fields on routed pages when first pass picked a disallowed page.
+    field_allowed_pages = getattr(ctx, "field_allowed_pages", None) or {}
+    if field_allowed_pages:
+        for field_key, allowed_pages in field_allowed_pages.items():
+            current = label_results.get(field_key)
+            if current is not None and _is_candidate_allowed_by_routing(ctx, field_key, current):
+                continue
+            routed_tokens = {
+                pnum: toks
+                for pnum, toks in label_tokens_by_page.items()
+                if pnum in allowed_pages
+            }
+            if not routed_tokens:
+                continue
+            rerun = extract_fields_from_ocr_tokens(
+                tokens_by_page=routed_tokens,
+                field_keys=[field_key],
+                payer_name=ctx.payer_str,
+            )
+            if field_key in rerun:
+                label_results[field_key] = rerun[field_key]
+
     for field_key, label_candidate in label_results.items():
+        if not _is_candidate_allowed_by_routing(ctx, field_key, label_candidate):
+            logger.debug(
+                "Routing dropped OCR-label candidate for %s on page %s",
+                field_key,
+                (label_candidate.evidence_bbox or {}).get("page"),
+            )
+            continue
         ctx.candidates_by_field.setdefault(field_key, []).append(label_candidate)
         ctx.raw_candidates_by_field.setdefault(field_key, []).append(
             label_candidate.to_dict()
@@ -194,6 +290,7 @@ def layoutlm_extraction(ctx: PipelineContext) -> None:
 
     # Collect content page images + raw OCR tokens for LayoutLM
     content_page_images_list: list = []
+    content_page_numbers: list[int] = []
     ctx.raw_ocr_tokens = []
 
     if ctx.settings.vlm.layoutlm_enabled:
@@ -203,6 +300,7 @@ def layoutlm_extraction(ctx: PipelineContext) -> None:
             page_record = ctx.page_repo.get_page_with_tokens(ctx.job_uuid, page_num)
             if page_record and not page_record.is_cover_page:
                 content_page_images_list.append(ctx.pages[page_num - 1])
+                content_page_numbers.append(page_num)
                 page_toks: list[dict] = []
                 if hasattr(page_record, "ocr_tokens"):
                     for tok in page_record.ocr_tokens:
@@ -230,6 +328,32 @@ def layoutlm_extraction(ctx: PipelineContext) -> None:
         ][:8]
     except Exception:
         fields_for_layoutlm = []
+
+    # Optional routing restriction: only when all requested fields have explicit
+    # allowlists. Otherwise keep existing all-content-page behavior.
+    field_allowed_pages = getattr(ctx, "field_allowed_pages", None) or {}
+    if fields_for_layoutlm and field_allowed_pages:
+        unions: set[int] = set()
+        all_routed = True
+        for field_key in fields_for_layoutlm:
+            pages = _allowed_pages_for_field(ctx, field_key)
+            if not pages:
+                all_routed = False
+                break
+            unions.update(pages)
+        if all_routed and unions:
+            filtered_images: list[Any] = []
+            filtered_tokens: list[list[dict]] = []
+            filtered_numbers: list[int] = []
+            for idx, page_num in enumerate(content_page_numbers):
+                if page_num in unions:
+                    filtered_images.append(content_page_images_list[idx])
+                    filtered_tokens.append(ctx.raw_ocr_tokens[idx])
+                    filtered_numbers.append(page_num)
+            if filtered_images:
+                content_page_images_list = filtered_images
+                ctx.raw_ocr_tokens = filtered_tokens
+                content_page_numbers = filtered_numbers
 
     if not ctx.settings.vlm.layoutlm_enabled:
         return
@@ -311,6 +435,23 @@ def layoutlm_extraction(ctx: PipelineContext) -> None:
             ctx.vlm_extraction_meta = ctx.layoutlm_extraction_meta
 
             for field_key, lm_candidate in lm_result.fields.items():
+                # Map local page index (1..N of subset) back to actual page number.
+                if lm_candidate.evidence_bbox and "page" in lm_candidate.evidence_bbox:
+                    try:
+                        local_page = int(lm_candidate.evidence_bbox["page"])
+                        if 1 <= local_page <= len(content_page_numbers):
+                            lm_candidate.evidence_bbox["page"] = content_page_numbers[local_page - 1]
+                    except Exception:
+                        pass
+
+                if not _is_candidate_allowed_by_routing(ctx, field_key, lm_candidate):
+                    logger.debug(
+                        "Routing dropped LayoutLM candidate for %s on page %s",
+                        field_key,
+                        (lm_candidate.evidence_bbox or {}).get("page"),
+                    )
+                    continue
+
                 ctx.candidates_by_field.setdefault(field_key, []).append(lm_candidate)
                 ctx.raw_candidates_by_field.setdefault(field_key, []).append(
                     lm_candidate.to_dict()
@@ -370,3 +511,72 @@ def vlm_prescreening(ctx: PipelineContext) -> None:
             ctx.fax_job_id,
             exc_info=True,
         )
+
+
+def hard_field_adjudication(ctx: PipelineContext) -> None:
+    """Step 9d: Adjudicate low-confidence/conflicted fields."""
+    adaptive_cfg = getattr(ctx.settings, "adaptive", None)
+    if not bool(getattr(adaptive_cfg, "hard_field_adjudication_enabled", False)):
+        return
+
+    from libs.shared.extraction.hard_field_adjudicator import HardFieldAdjudicator
+
+    adjudicator = HardFieldAdjudicator(
+        threshold=float(getattr(adaptive_cfg, "hard_field_threshold", 0.72)),
+        conflict_gap=float(getattr(adaptive_cfg, "hard_field_conflict_gap", 0.12)),
+    )
+    added = 0
+    details: list[dict[str, Any]] = []
+
+    context_values = {
+        fk: ((cands[0].value if cands else None))
+        for fk, cands in (ctx.candidates_by_field or {}).items()
+    }
+
+    for field_key, candidates in list((ctx.candidates_by_field or {}).items()):
+        if not candidates or not adjudicator.should_adjudicate(candidates):
+            continue
+
+        window = _field_text_window(ctx, field_key)
+        result = adjudicator.adjudicate(
+            field_key=field_key,
+            candidates=candidates,
+            page_text_window=window,
+            payer_name=ctx.payer_str,
+            context=context_values,
+        )
+        candidate = result.to_candidate()
+        if candidate is None:
+            continue
+
+        existing_norm = {(c.value or "").strip().lower() for c in candidates}
+        if (candidate.value or "").strip().lower() in existing_norm:
+            continue
+
+        ctx.candidates_by_field.setdefault(field_key, []).append(candidate)
+        ctx.raw_candidates_by_field.setdefault(field_key, []).append(candidate.to_dict())
+        ctx.field_repo.upsert_field(
+            fax_job_id=ctx.job_uuid,
+            field_key=field_key,
+            method=ExtractionMethodEnum.LLM,
+            field_value=candidate.value,
+            field_conf=candidate.confidence,
+            evidence_bbox=candidate.evidence_bbox,
+            evidence_text=candidate.evidence_text,
+        )
+        added += 1
+        details.append(
+            {
+                "field_key": field_key,
+                "confidence": candidate.confidence,
+                "reason": result.reason,
+            }
+        )
+
+    ctx.adjudication_meta = {
+        "enabled": True,
+        "added_candidates": added,
+        "fields": details[:20],
+    }
+    if added:
+        logger.info("Hard-field adjudication added %d adjudicated candidates", added)

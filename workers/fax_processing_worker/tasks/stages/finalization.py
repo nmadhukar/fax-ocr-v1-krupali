@@ -140,6 +140,15 @@ def store_job_metadata(ctx: PipelineContext) -> None:
             if ctx.layoutlm_extraction_meta
             else None
         ),
+        "page_sections": ctx.page_sections,
+        "page_section_scores": ctx.page_section_scores,
+        "field_allowed_pages": (
+            {k: sorted(v) for k, v in (ctx.field_allowed_pages or {}).items()}
+            if ctx.field_allowed_pages
+            else {}
+        ),
+        "hard_field_adjudication": ctx.adjudication_meta,
+        "template_drift": ctx.template_drift_meta,
         "cross_field_validation": ctx.cross_result.to_dict(),
         "confidence_scoring": ctx.scoring_result.to_dict(),
     }

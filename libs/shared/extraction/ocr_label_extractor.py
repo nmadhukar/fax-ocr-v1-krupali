@@ -231,6 +231,9 @@ def extract_fields_from_ocr_tokens(
                 field_key, labels, simple_tokens
             )
             if candidate:
+                if candidate.evidence_bbox is None:
+                    candidate.evidence_bbox = {}
+                candidate.evidence_bbox["page"] = page_num
                 results[field_key] = candidate
 
     if results:

@@ -240,6 +240,7 @@ class LayoutLMExtractor:
                                     "y0": min(t.y0 for t in matched),
                                     "x1": max(t.x1 for t in matched),
                                     "y1": max(t.y1 for t in matched),
+                                    "page": page_idx + 1,
                                 }
                                 evidence_text = " ".join(t.text for t in matched)
                                 ocr_align_conf = sum(t.confidence for t in matched) / len(matched)

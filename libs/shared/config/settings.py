@@ -195,6 +195,49 @@ class HitlSettings(BaseSettings):
     )
 
 
+class AdaptiveExtractionSettings(BaseSettings):
+    """Adaptive extraction/routing/ranker settings."""
+
+    model_config = SettingsConfigDict(env_prefix="ADAPTIVE_")
+
+    section_routing_enabled: bool = Field(
+        default=True,
+        description="Enable page section routing before extraction",
+    )
+    hard_field_adjudication_enabled: bool = Field(
+        default=True,
+        description="Enable conflict adjudication for low-confidence hard fields",
+    )
+    hard_field_threshold: float = Field(
+        default=0.72,
+        description="Adjudication trigger threshold for best candidate confidence",
+    )
+    hard_field_conflict_gap: float = Field(
+        default=0.12,
+        description="Conflict trigger: top two candidates within this confidence gap",
+    )
+    candidate_ranker_enabled: bool = Field(
+        default=True,
+        description="Enable learned candidate ranker overlay",
+    )
+    candidate_ranker_model_path: str = Field(
+        default="models/candidate_ranker/model.json",
+        description="Path to learned candidate ranker model JSON",
+    )
+    template_drift_enabled: bool = Field(
+        default=True,
+        description="Enable template drift detection metadata",
+    )
+    template_drift_low_match_threshold: float = Field(
+        default=0.72,
+        description="Template match score below this indicates potential drift",
+    )
+    template_drift_missing_critical_threshold: float = Field(
+        default=0.35,
+        description="Missing critical field ratio threshold for drift flag",
+    )
+
+
 class ApiSettings(BaseSettings):
     """API server settings."""
 
@@ -289,6 +332,7 @@ class Settings(BaseSettings):
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     confidence: ConfidenceSettings = Field(default_factory=ConfidenceSettings)
     hitl: HitlSettings = Field(default_factory=HitlSettings)
+    adaptive: AdaptiveExtractionSettings = Field(default_factory=AdaptiveExtractionSettings)
     features: FeatureFlags = Field(default_factory=FeatureFlags)
     api: ApiSettings = Field(default_factory=ApiSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)

@@ -12,10 +12,13 @@ Pre-processing (preprocess_vlm_candidates) demotes VLM results that are clearly
 wrong before scoring: date confusion, member-ID contamination, fax-header values.
 """
 
+import json
+import os
 import re as _re
 from collections import Counter
 from copy import copy
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from libs.shared.db.models.enums import ExtractionMethodEnum
@@ -79,6 +82,68 @@ class ExtractedFieldData:
         return d
 
 
+class CandidateRanker:
+    """
+    Lightweight learned ranker loaded from a JSON artifact.
+
+    Model format:
+      {
+        "version": "2026-02-25",
+        "global": {"method_bias": {"TEMPLATE_OCR": 0.03, ...}},
+        "fields": {"patient_name": {"method_bias": {"LAYOUTLM": 0.04}}}
+      }
+    """
+
+    def __init__(self, model_path: str):
+        self.model_path = model_path
+        self.model: dict[str, Any] = {}
+        self.loaded = False
+        self._load()
+
+    def _load(self) -> None:
+        path = Path(self.model_path)
+        if not path.exists():
+            return
+        try:
+            self.model = json.loads(path.read_text(encoding="utf-8"))
+            self.loaded = True
+        except Exception:
+            self.model = {}
+            self.loaded = False
+
+    def score_delta(
+        self,
+        *,
+        field_key: str,
+        candidate: ExtractionCandidate,
+        candidates: list[ExtractionCandidate],
+    ) -> float:
+        if not self.loaded:
+            return 0.0
+
+        method_name = candidate.method.value
+        delta = 0.0
+
+        global_bias = (self.model.get("global") or {}).get("method_bias", {})
+        field_bias = ((self.model.get("fields") or {}).get(field_key, {}) or {}).get(
+            "method_bias",
+            {},
+        )
+        delta += float(global_bias.get(method_name, 0.0))
+        delta += float(field_bias.get(method_name, 0.0))
+
+        # Reward repeated agreement among candidates (learned consensus prior)
+        norm = (candidate.value or "").strip().lower()
+        if norm:
+            agree_count = sum(
+                1 for c in candidates if (c.value or "").strip().lower() == norm
+            )
+            if agree_count > 1:
+                delta += min(0.06, 0.03 * (agree_count - 1))
+
+        return max(-0.20, min(0.20, delta))
+
+
 class FieldBuilder:
     """
     Builds final field values from multiple extraction candidates.
@@ -97,11 +162,19 @@ class FieldBuilder:
         agreement_bonus: float = 0.20,   # Raised: 2 sources agree = +0.20
         conflict_penalty: float = 0.10,
         vlm_multiplier: float = 0.70,    # 0.70 = base model (+0.07), 1.20 = fine-tuned (+0.12)
+        ranker_enabled: bool = True,
+        ranker_model_path: str | None = None,
     ):
         self.template_bonus = template_bonus
         self.agreement_bonus = agreement_bonus
         self.conflict_penalty = conflict_penalty
         self.vlm_multiplier = vlm_multiplier
+        model_path = (
+            ranker_model_path
+            or os.environ.get("ADAPTIVE_CANDIDATE_RANKER_MODEL_PATH")
+            or "models/candidate_ranker/model.json"
+        )
+        self.ranker = CandidateRanker(model_path) if ranker_enabled else None
 
     # Fields with confidence below this threshold are considered not present in the document.
     # Below 0.30 across all sources means no source found meaningful evidence.
@@ -206,7 +279,8 @@ class FieldBuilder:
 
             elif candidate.method in (
                 ExtractionMethodEnum.LAYOUTLM,
-                            ExtractionMethodEnum.VLM,
+                ExtractionMethodEnum.VLM,
+                ExtractionMethodEnum.LLM,
             ):
                 # VLM/LayoutLM gets a small bonus (less than template).
                 # When they agree with template, the combined score is high.
@@ -225,6 +299,13 @@ class FieldBuilder:
             elif len(candidates) > 1:
                 # Different sources disagree → small penalty
                 score -= self.conflict_penalty
+
+            if self.ranker is not None:
+                score += self.ranker.score_delta(
+                    field_key=field_key,
+                    candidate=candidate,
+                    candidates=candidates,
+                )
 
             scored.append((candidate, score))
 

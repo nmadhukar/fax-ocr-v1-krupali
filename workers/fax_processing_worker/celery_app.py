@@ -20,6 +20,7 @@ app = Celery(
         "workers.fax_processing_worker.tasks.process_fax",
         "workers.fax_processing_worker.tasks.mismatch_monitor",
         "workers.fax_processing_worker.tasks.retrain_layoutlm",
+        "workers.fax_processing_worker.tasks.template_drift_monitor",
     ],
 )
 
@@ -46,6 +47,10 @@ app.conf.update(
             "task": "workers.fax_processing_worker.tasks.retrain_layoutlm.check_and_retrain_layoutlm",
             "schedule": 604800.0,  # every 7 days
             # Override schedule via env: RETRAIN_MIN_NEW_LABELS (default 20)
+        },
+        "template-drift-daily": {
+            "task": "workers.fax_processing_worker.tasks.template_drift_monitor.aggregate_template_drift",
+            "schedule": 86400.0,  # every 24 hours
         },
     },
 )

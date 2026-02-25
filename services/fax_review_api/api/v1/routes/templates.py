@@ -111,6 +111,9 @@ class FieldCreate(BaseModel):
     target_page: int = 1
     validation_regex: str | None = None
     expected_type: str = "text"
+    anchor_aliases: list[str] = Field(default_factory=list)
+    anchor_direction: str = "right"
+    anchor_max_tokens: int = Field(default=4, ge=1, le=12)
 
     @model_validator(mode="after")
     def validate_roi_order(self) -> "FieldCreate":
@@ -128,6 +131,9 @@ class FieldCreate(BaseModel):
                 compiled.search("")
             except _re.error as exc:
                 raise ValueError(f"Invalid validation_regex: {exc}") from exc
+        allowed_dirs = {"right", "below"}
+        if self.anchor_direction not in allowed_dirs:
+            raise ValueError(f"anchor_direction must be one of {sorted(allowed_dirs)}")
         return self
 
 
@@ -145,6 +151,9 @@ class FieldResponse(BaseModel):
     target_page: int
     validation_regex: str | None
     expected_type: str
+    anchor_aliases: list[str] = Field(default_factory=list)
+    anchor_direction: str = "right"
+    anchor_max_tokens: int = 4
 
     class Config:
         from_attributes = True
@@ -662,6 +671,15 @@ def create_field(
         target_page=data.target_page,
         validation_regex=data.validation_regex,
         expected_type=data.expected_type,
+        post_processing={
+            "anchor": {
+                "aliases": [a for a in data.anchor_aliases if a.strip()],
+                "direction": data.anchor_direction,
+                "max_tokens": data.anchor_max_tokens,
+            }
+            if data.anchor_aliases
+            else {},
+        },
     )
 
     field_repo.create(field)
@@ -679,6 +697,15 @@ def create_field(
         target_page=field.target_page,
         validation_regex=field.validation_regex,
         expected_type=field.expected_type,
+        anchor_aliases=list(
+            ((field.post_processing or {}).get("anchor") or {}).get("aliases", [])
+        ),
+        anchor_direction=str(
+            ((field.post_processing or {}).get("anchor") or {}).get("direction", "right")
+        ),
+        anchor_max_tokens=int(
+            ((field.post_processing or {}).get("anchor") or {}).get("max_tokens", 4)
+        ),
     )
 
 
@@ -707,6 +734,15 @@ def list_fields(
             target_page=f.target_page,
             validation_regex=f.validation_regex,
             expected_type=f.expected_type,
+            anchor_aliases=list(
+                ((f.post_processing or {}).get("anchor") or {}).get("aliases", [])
+            ),
+            anchor_direction=str(
+                ((f.post_processing or {}).get("anchor") or {}).get("direction", "right")
+            ),
+            anchor_max_tokens=int(
+                ((f.post_processing or {}).get("anchor") or {}).get("max_tokens", 4)
+            ),
         )
         for f in fields
     ]

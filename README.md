@@ -51,10 +51,15 @@ Celery Worker
      +-- Template matching  (pHash + anchor verification)
      +-- Field extraction:
      |       Template extractor  (label-anchored, primary)
+     |       Anchor-relative extraction  (template drift tolerant)
      |       OCR label extractor  (regex-driven fallback)
      |       LayoutLM Document QA  (gap-fill for low-confidence fields)
+     |       Hard-field adjudication  (conflict resolver for low-confidence fields)
+     +-- Page section routing  (auth summary vs appeal/instructions)
+     +-- Learned candidate ranker  (HITL-trained method bias overlay)
      +-- Confidence scoring and merging
      +-- HITL flagging  (fields below threshold sent to review queue)
+     +-- Drift telemetry  (template score/missing-field/correction signals)
      +-- Job finalized or marked NEEDS_REVIEW
      |
      +-- COMPLETED  ->  results available via GET /v1/faxes/{id}/results
@@ -383,6 +388,18 @@ All settings are controlled via environment variables or a `.env` file in the pr
 | `CONFIDENCE_NEEDS_REVIEW` | Score below which job goes to review | `0.65` |
 | `OCR_ENABLE_GPU` | Use GPU for PaddleOCR | `false` |
 
+### Adaptive extraction settings
+
+| Variable | Description | Default |
+|---|---|---|
+| `ADAPTIVE_SECTION_ROUTING_ENABLED` | Route pages by section before extraction | `true` |
+| `ADAPTIVE_HARD_FIELD_ADJUDICATION_ENABLED` | Add adjudication candidate for low-confidence conflicts | `true` |
+| `ADAPTIVE_HARD_FIELD_THRESHOLD` | Adjudication trigger confidence threshold | `0.72` |
+| `ADAPTIVE_HARD_FIELD_CONFLICT_GAP` | Trigger when top two candidates are within this gap | `0.12` |
+| `ADAPTIVE_CANDIDATE_RANKER_ENABLED` | Enable learned ranker overlay in FieldBuilder | `true` |
+| `ADAPTIVE_CANDIDATE_RANKER_MODEL_PATH` | Ranker JSON path | `models/candidate_ranker/model.json` |
+| `ADAPTIVE_TEMPLATE_DRIFT_ENABLED` | Emit template drift signals in job metadata | `true` |
+
 ### HITL settings
 
 | Variable | Description | Default |
@@ -417,6 +434,7 @@ When a processed document has fields below the confidence threshold, the job sta
 4. Call `POST /v1/faxes/{id}/review/submit` with any corrections
 
 Corrections are applied with full confidence and recorded as training examples. When enough corrections accumulate (`RETRAIN_MIN_NEW_LABELS`, default 20), the weekly retraining task fine-tunes the LayoutLM adapter, which is then registered as a new model version and can be promoted to production.
+The same weekly loop can also retrain the candidate ranker (`scripts/train_candidate_ranker.py`) from HITL corrections.
 
 ---
 
