@@ -19,6 +19,230 @@ from . import PipelineContext
 logger = logging.getLogger(__name__)
 
 
+_DATE_TOKEN_RE = re.compile(
+    r"\b(?:\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})\b"
+)
+_DATE_PARSE_FORMATS = (
+    "%m/%d/%Y",
+    "%m-%d-%Y",
+    "%m/%d/%y",
+    "%m-%d-%y",
+    "%Y/%m/%d",
+    "%Y-%m-%d",
+)
+
+
+def _is_valid_date_token(token: str) -> bool:
+    """Return True when token parses as a real date."""
+    for fmt in _DATE_PARSE_FORMATS:
+        try:
+            datetime.strptime(token, fmt)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def _extract_date_tokens(value: str) -> list[str]:
+    """Extract valid date tokens from free-form field text."""
+    if not value:
+        return []
+    return [token for token in _DATE_TOKEN_RE.findall(value) if _is_valid_date_token(token)]
+
+
+def _date_direction_for_field(field_key: str) -> str:
+    """Date selection direction for date-range fields."""
+    key = (field_key or "").lower()
+    if key in ("auth_expiration_date", "service_end_date"):
+        return "last"
+    if "expiration" in key or "end_date" in key:
+        return "last"
+    return "first"
+
+
+def _normalize_date_fields(fields: dict[str, dict[str, Any]]) -> None:
+    """Normalize date-like fields to one semantic date value."""
+    date_keys = {
+        key for key in fields.keys() if key.endswith("_date")
+    } | {"patient_dob", "auth_effective_date", "auth_expiration_date", "next_review_date"}
+
+    for field_key in date_keys:
+        field_data = fields.get(field_key) or {}
+        raw_value = (field_data.get("value") or "").strip()
+        if not raw_value:
+            continue
+        dates = _extract_date_tokens(raw_value)
+        if not dates:
+            logger.info(
+                "Cleared %s: non-date value '%s'",
+                field_key,
+                raw_value[:80],
+            )
+            fields.pop(field_key, None)
+            continue
+        direction = _date_direction_for_field(field_key)
+        normalized = dates[-1] if direction == "last" else dates[0]
+        if raw_value != normalized:
+            logger.info(
+                "Normalized %s from '%s' to '%s'",
+                field_key,
+                raw_value,
+                normalized,
+            )
+            field_data["value"] = normalized
+
+
+_APPROVAL_RE = (
+    re.compile(r"\bauth(?:orization)?\s+status\s*[:\s]*approv", re.IGNORECASE),
+    re.compile(r"\bapproval\s+notification\b", re.IGNORECASE),
+    re.compile(r"\bnurse\s+recommendation\s*[:\s]*approv", re.IGNORECASE),
+    re.compile(r"\b(?:has\s+been|is)\s+approved\b", re.IGNORECASE),
+    re.compile(r"\bdecision\s*[:\s]*approv", re.IGNORECASE),
+)
+_DENIAL_RE = (
+    re.compile(r"\bauth(?:orization)?\s+status\s*[:\s]*deni", re.IGNORECASE),
+    re.compile(r"\bdenial\s+(?:notification|notice)\b", re.IGNORECASE),
+    re.compile(r"\b(?:has\s+been|is)\s+denied\b", re.IGNORECASE),
+    re.compile(r"\bdecision\s*[:\s]*deni", re.IGNORECASE),
+    re.compile(r"\badverse\s+(?:determination|decision)\b", re.IGNORECASE),
+    re.compile(r"\bnot\s+(?:medically\s+)?necessary\b", re.IGNORECASE),
+)
+
+
+def _decision_from_text(value: str) -> str | None:
+    """Map free-form decision text to APPROVED/DENIED."""
+    text = (value or "").strip()
+    if not text:
+        return None
+    upper = text.upper()
+    if "APPROV" in upper:
+        return "APPROVED"
+    if "DENI" in upper:
+        return "DENIED"
+    return None
+
+
+def _infer_decision_from_ocr(scan_ocr: str) -> str | None:
+    """Infer decision using OCR text when extracted decision is noisy."""
+    text = (scan_ocr or "").strip()
+    if not text:
+        return None
+
+    approval_hits = sum(1 for pat in _APPROVAL_RE if pat.search(text))
+    denial_hits = sum(1 for pat in _DENIAL_RE if pat.search(text))
+    if approval_hits > denial_hits and approval_hits > 0:
+        return "APPROVED"
+    if denial_hits > approval_hits and denial_hits > 0:
+        return "DENIED"
+    return None
+
+
+def _decision_from_doc_type(ctx: PipelineContext) -> str | None:
+    """Map classified doc type to canonical decision."""
+    doc_type = getattr(getattr(ctx, "job", None), "doc_type", None)
+    doc_type_value = getattr(doc_type, "value", str(doc_type or ""))
+    if doc_type_value == "PRIOR_AUTH_APPROVAL":
+        return "APPROVED"
+    if doc_type_value in ("PRIOR_AUTH_DENIAL", "PEER_TO_PEER_DENIAL"):
+        return "DENIED"
+    return None
+
+
+def _normalize_decision_field(ctx: PipelineContext) -> None:
+    """Ensure decision field is canonical enum text."""
+    fields = ctx.extracted_fields
+    decision_data = fields.get("decision") or {}
+    current_value = (decision_data.get("value") or "").strip()
+
+    canonical = _decision_from_text(current_value)
+    if not canonical:
+        canonical = _decision_from_doc_type(ctx)
+    if not canonical:
+        scan_ocr = ctx.full_doc_ocr_text or ctx.all_ocr_text or ""
+        canonical = _infer_decision_from_ocr(scan_ocr)
+
+    if not canonical:
+        if current_value:
+            logger.info("Cleared decision: non-canonical value '%s'", current_value[:120])
+            fields.pop("decision", None)
+        return
+
+    if not decision_data:
+        fields["decision"] = {
+            "value": canonical,
+            "confidence": 0.80,
+            "method": ExtractionMethodEnum.TEMPLATE_OCR.value,
+            "evidence_bbox": None,
+            "evidence_text": f"Inferred decision={canonical}",
+            "candidates": [],
+        }
+        return
+
+    if current_value != canonical:
+        logger.info("Normalized decision from '%s' to '%s'", current_value, canonical)
+        decision_data["value"] = canonical
+        if not decision_data.get("evidence_text"):
+            decision_data["evidence_text"] = canonical
+
+
+def _looks_like_provider_prose(value: str) -> bool:
+    """Detect narrative text accidentally captured as provider_name."""
+    text = (value or "").strip().lower()
+    if not text:
+        return False
+    words = [w for w in re.split(r"\s+", text) if w]
+    if len(words) > 12:
+        return True
+    prose_markers = (
+        "you can ask",
+        "service authorization appeal",
+        "clinical peer",
+        "reason for appealing",
+        "submitted within",
+        "if you disagree",
+        "coverage determination",
+        "benefits and coverage",
+        "provider services",
+        "marketplace",
+        "medicaid",
+        "dsnp",
+        "provider portal",
+        "https://",
+    )
+    return any(marker in text for marker in prose_markers)
+
+
+def _is_reasonable_provider_name(value: str) -> bool:
+    """Basic provider/facility name quality gate."""
+    candidate = (value or "").strip().strip(",.;:-")
+    if len(candidate) < 3:
+        return False
+    if not any(c.isalpha() for c in candidate):
+        return False
+    compact = re.sub(r"[^A-Za-z0-9]", "", candidate)
+    if compact:
+        digit_ratio = sum(1 for c in compact if c.isdigit()) / len(compact)
+        if digit_ratio > 0.20:
+            return False
+    if candidate.count(":") > 1:
+        return False
+    if re.search(r"https?://", candidate, re.IGNORECASE):
+        return False
+    if re.search(r"\b\d{3}[-)\s]\d{3}[-\s]\d{4}\b", candidate):
+        return False
+    lower = candidate.lower()
+    if _looks_like_provider_prose(lower):
+        return False
+    if (
+        lower.endswith(":")
+        or "provider name" in lower
+        or "requesting provider" in lower
+        or "servicing provider" in lower
+    ):
+        return False
+    return True
+
+
 def merge_fields(ctx: PipelineContext) -> None:
     """Step 10: Multi-source merge via FieldBuilder."""
     field_builder = FieldBuilder(
@@ -47,11 +271,46 @@ def smart_corrections(ctx: PipelineContext) -> None:
     """Step 10b: Smart post-extraction corrections."""
     fields = ctx.extracted_fields
     _donly = lambda s: re.sub(r"\D", "", s)
+    _normalize_date_fields(fields)
+    _normalize_decision_field(ctx)
 
     _member_id_val = (fields.get("member_id") or {}).get("value") or ""
     _dob_val = (fields.get("patient_dob") or {}).get("value") or ""
     _eff_val = (fields.get("auth_effective_date") or {}).get("value") or ""
     _exp_val = (fields.get("auth_expiration_date") or {}).get("value") or ""
+    _npi_val = (fields.get("provider_npi") or {}).get("value") or ""
+
+    # member_id bleeding from provider NPI (same numeric stem) -> clear suspect member_id
+    _mid_digits = re.sub(r"\D", "", _member_id_val)
+    _npi_digits = re.sub(r"\D", "", _npi_val)
+    _mid_method = (fields.get("member_id") or {}).get("method") or ""
+    if (
+        _mid_digits
+        and _npi_digits
+        and len(_npi_digits) == 10
+        and len(_mid_digits) in (10, 11)
+        and _mid_digits.startswith(_npi_digits)
+        and _mid_method in ("OCR_LABEL", "LAYOUTLM", "VLM")
+    ):
+        logger.info(
+            "Auto-corrected member_id: value overlaps provider_npi (%s vs %s) -> cleared",
+            _mid_digits,
+            _npi_digits,
+        )
+        fields.pop("member_id", None)
+        _member_id_val = ""
+
+    # member_id that looks like a date/timestamp is almost always extraction bleed
+    if _member_id_val:
+        _mid_raw = _member_id_val.strip()
+        _looks_like_date = bool(
+            re.search(r"\b\d{4}[/\-]\d{1,2}[/\-]\d{1,2}\b", _mid_raw)
+            or re.search(r"\b\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}\b", _mid_raw)
+        )
+        if _looks_like_date:
+            logger.info("Auto-corrected member_id: value looks like date/time -> cleared")
+            fields.pop("member_id", None)
+            _member_id_val = ""
 
     # units_requested that duplicates member_id → clear
     _units_data = fields.get("units_requested")
@@ -123,6 +382,24 @@ def smart_corrections(ctx: PipelineContext) -> None:
     # patient_dob: impossible birth year (too recent) → not valid adult DOB
     _dob_data = fields.get("patient_dob")
     if _dob_data:
+        _dob_raw = (_dob_data.get("value") or "").strip()
+        _dob_norm = re.sub(r"[-.]", "/", _dob_raw)
+        _dob_parsed = None
+        for _fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y/%m/%d", "%Y-%m-%d"):
+            try:
+                _dob_parsed = datetime.strptime(_dob_norm, _fmt)
+                break
+            except Exception:
+                pass
+        if _dob_raw and _dob_parsed is None:
+            logger.info(
+                "Auto-corrected patient_dob: invalid date format '%s' -> cleared",
+                _dob_raw,
+            )
+            fields.pop("patient_dob", None)
+            _dob_data = None
+
+    if _dob_data:
         _dob_yr_m = re.search(r"\b(20\d{2}|19\d{2}|18\d{2})\b", _dob_data.get("value") or "")
         if _dob_yr_m:
             _dob_year = int(_dob_yr_m.group(1))
@@ -149,6 +426,31 @@ def smart_corrections(ctx: PipelineContext) -> None:
     # patient_name = provider contamination
     _pn_data = fields.get("patient_name")
     _prvn_data = fields.get("provider_name")
+    _pan_data = fields.get("prior_auth_number")
+    if _prvn_data:
+        _prvn_val_raw = (_prvn_data.get("value") or "").strip()
+        _prvn_val_raw_lower = _prvn_val_raw.lower()
+        _provider_label_like = (
+            _prvn_val_raw.endswith(":")
+            or "provider name" in _prvn_val_raw_lower
+            or "servicing provider" in _prvn_val_raw_lower
+            or "requesting provider" in _prvn_val_raw_lower
+        )
+        _provider_prose_like = _looks_like_provider_prose(_prvn_val_raw)
+        if _provider_label_like or _provider_prose_like:
+            logger.info(
+                "Auto-corrected provider_name: invalid value captured ('%s') -> cleared",
+                _prvn_val_raw[:120],
+            )
+            fields.pop("provider_name", None)
+            _prvn_data = None
+    if _prvn_data and _pan_data:
+        _prvn_compact = re.sub(r"\W", "", (_prvn_data.get("value") or "")).upper()
+        _pan_compact = re.sub(r"\W", "", (_pan_data.get("value") or "")).upper()
+        if _prvn_compact and _pan_compact and _prvn_compact == _pan_compact:
+            logger.info("Auto-corrected provider_name: duplicates prior_auth_number -> cleared")
+            fields.pop("provider_name", None)
+            _prvn_data = None
     if _pn_data and _prvn_data:
         _pn_val = (_pn_data.get("value") or "").lower()
         _prvn_val = (_prvn_data.get("value") or "").lower()
@@ -182,14 +484,17 @@ def ocr_scanners(ctx: PipelineContext) -> None:
     fields = ctx.extracted_fields
     scan_ocr = ctx.full_doc_ocr_text or ctx.all_ocr_text or ""
 
+    _date_span_scanner(fields, scan_ocr)
     _service_code_scanner(fields, scan_ocr, ctx.raw_ocr_tokens)
     _auth_date_range_recovery(fields, scan_ocr)
     _service_dates_scanner(fields, scan_ocr)
     _units_scanner(fields, scan_ocr)
     _prior_auth_validation(fields, scan_ocr)
+    _provider_name_recovery(fields, scan_ocr)
     _patient_name_recovery(fields, scan_ocr, ctx)
     _following_member_scan(fields, scan_ocr)
     _next_review_to_dob_transfer(fields, scan_ocr)
+    _normalize_date_fields(fields)
 
     # Update payer_str in case template match changed detected_payer
     ctx.update_payer_str()
@@ -230,6 +535,46 @@ def _service_code_scanner(fields: dict, scan_ocr: str, raw_ocr_tokens: list) -> 
             "evidence_text": f"OCR scan: {' '.join(unique_codes[:3])}",
             "candidates": [],
         }
+
+
+def _date_span_scanner(fields: dict, scan_ocr: str) -> None:
+    """Recover effective/expiration dates from Date Span style text."""
+    span_re = re.compile(
+        r"(?:date\s*span|authorization\s+dates?|service\s+dates?)\s*:?\s*"
+        r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s*[-–—]+\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})",
+        re.IGNORECASE,
+    )
+    span_m = span_re.search(scan_ocr or "")
+    if not span_m:
+        return
+
+    start_date, end_date = span_m.group(1), span_m.group(2)
+    eff_val = (fields.get("auth_effective_date") or {}).get("value") or ""
+    exp_val = (fields.get("auth_expiration_date") or {}).get("value") or ""
+    eff_valid = bool(_extract_date_tokens(eff_val))
+    exp_valid = bool(_extract_date_tokens(exp_val))
+
+    if not eff_valid or eff_val != start_date:
+        fields["auth_effective_date"] = {
+            "value": start_date,
+            "confidence": 0.72,
+            "method": ExtractionMethodEnum.TEMPLATE_OCR.value,
+            "evidence_bbox": None,
+            "evidence_text": f"OCR date span: {span_m.group(0)}",
+            "candidates": [],
+        }
+        logger.info("Date span scanner set auth_effective_date=%s", start_date)
+
+    if not exp_valid or exp_val != end_date:
+        fields["auth_expiration_date"] = {
+            "value": end_date,
+            "confidence": 0.72,
+            "method": ExtractionMethodEnum.TEMPLATE_OCR.value,
+            "evidence_bbox": None,
+            "evidence_text": f"OCR date span: {span_m.group(0)}",
+            "candidates": [],
+        }
+        logger.info("Date span scanner set auth_expiration_date=%s", end_date)
 
 
 def _auth_date_range_recovery(fields: dict, scan_ocr: str) -> None:
@@ -363,6 +708,107 @@ def _prior_auth_validation(fields: dict, scan_ocr: str) -> None:
         else:
             logger.info("prior_auth_number cleared (no valid candidate found)")
             fields.pop("prior_auth_number", None)
+
+
+def _provider_name_recovery(fields: dict, scan_ocr: str) -> None:
+    """Recover provider_name from OCR lines when field is missing or invalid."""
+    existing = fields.get("provider_name") or {}
+    existing_value = (existing.get("value") or "").strip()
+    if existing_value and _is_reasonable_provider_name(existing_value):
+        return
+    if existing_value:
+        fields.pop("provider_name", None)
+
+    line_patterns = (
+        re.compile(
+            r"^(?:servicing|requesting|ordering|attending|referring|rendering|treating)?\s*"
+            r"provider(?:\s+name)?\s*[:\-]\s*(.+)$",
+            re.IGNORECASE,
+        ),
+        re.compile(r"^facility\s+name\s*[:\-]\s*(.+)$", re.IGNORECASE),
+    )
+    alt_patterns = (
+        re.compile(r"\bto\.?\s*(.+?)\s+fax\s*[:#]", re.IGNORECASE),
+        re.compile(
+            r"\bcc:\s*request\s+provider\s*:?\s*(.+?)\s+(?:and/or\s+)?service\s+provider",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\brequest\s+provider\s*:?\s*(.+?)(?:\s+and/or|\s+service\s+provider|$)",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\bservice\s+provider\s*:?\s*(.+?)(?:\s+n/?a\b|$)",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\bmember\s+name\s*:?\s*(.+?)\s+requesting\s+provider\s+name",
+            re.IGNORECASE,
+        ),
+    )
+    label_only_re = re.compile(
+        r"^(?:servicing|requesting|ordering|attending|referring|rendering|treating)?\s*"
+        r"provider(?:\s+name)?\s*[:\-]?\s*$",
+        re.IGNORECASE,
+    )
+    stop_at_re = re.compile(
+        r"\b(?:npi|phone|fax|member(?:\s+id)?|dob|date\s+of\s+birth|authorization|"
+        r"reference|effective\s+date|start\s+date|end\s+date)\b",
+        re.IGNORECASE,
+    )
+
+    def _clean_provider_candidate(raw: str) -> str:
+        candidate = re.sub(r"\s+", " ", (raw or "")).strip(" ,.;:-")
+        candidate = re.sub(r"^(?:and/or\s+)?(?:request|service)\s+provider\s*:?\s*", "", candidate, flags=re.IGNORECASE)
+        words = candidate.split()
+        if len(words) >= 8 and len(words) % 2 == 0:
+            half = len(words) // 2
+            left = [re.sub(r"[^a-z0-9]", "", w.lower()) for w in words[:half]]
+            right = [re.sub(r"[^a-z0-9]", "", w.lower()) for w in words[half:]]
+            if left == right:
+                candidate = " ".join(words[:half])
+        return candidate.strip(" ,.;:-")
+
+    lines = [ln.strip() for ln in (scan_ocr or "").splitlines() if ln.strip()]
+    for idx, line in enumerate(lines):
+        candidate = ""
+        for pat in line_patterns:
+            m = pat.match(line)
+            if m:
+                candidate = m.group(1).strip()
+                break
+
+        if not candidate:
+            for pat in alt_patterns:
+                m = pat.search(line)
+                if m:
+                    candidate = m.group(1).strip()
+                    break
+
+        if not candidate and label_only_re.match(line) and idx + 1 < len(lines):
+            candidate = lines[idx + 1].strip()
+
+        if not candidate:
+            continue
+
+        candidate = _clean_provider_candidate(candidate)
+        stop_m = stop_at_re.search(candidate)
+        if stop_m:
+            candidate = candidate[: stop_m.start()].strip()
+        candidate = candidate.strip(",.;:-")
+        if not _is_reasonable_provider_name(candidate):
+            continue
+
+        logger.info("Provider name OCR recovery selected '%s'", candidate[:80])
+        fields["provider_name"] = {
+            "value": candidate,
+            "confidence": 0.62,
+            "method": ExtractionMethodEnum.TEMPLATE_OCR.value,
+            "evidence_bbox": None,
+            "evidence_text": f"OCR: {line}",
+            "candidates": [],
+        }
+        return
 
 
 def _patient_name_recovery(fields: dict, scan_ocr: str, ctx: PipelineContext) -> None:

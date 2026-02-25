@@ -12,6 +12,7 @@ extraction path.
 import logging
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from libs.shared.db.models.enums import ExtractionMethodEnum
@@ -309,6 +310,15 @@ _EMBEDDED_DATE_RE = re.compile(_DATE_PART)
 _PHONE_RE = re.compile(r"[\d\(\)\-\.\s]{7,}")
 _NPI_RE = re.compile(r"^\d{10}$")
 
+_DATE_PARSE_FORMATS = (
+    "%m/%d/%Y",
+    "%m-%d-%Y",
+    "%m/%d/%y",
+    "%m-%d-%y",
+    "%Y/%m/%d",
+    "%Y-%m-%d",
+)
+
 
 _LABEL_PREFIX_RE: dict[str, "re.Pattern[str]"] = {
     "member_id": re.compile(
@@ -363,6 +373,30 @@ def _strip_label_prefix(field_key: str, value: str) -> str:
     stripped = _strip_leading_separator(stripped)
     # Return stripped (may be "") — do NOT fall back to original when pattern matched everything
     return stripped
+
+
+def _normalize_date_value_for_field(field_key: str, value: str) -> str:
+    """Normalize date/range values based on the target field semantics."""
+    def _is_valid_date_token(token: str) -> bool:
+        for fmt in _DATE_PARSE_FORMATS:
+            try:
+                datetime.strptime(token, fmt)
+                return True
+            except ValueError:
+                continue
+        return False
+
+    key = field_key.lower()
+    if key not in ("patient_dob", "auth_effective_date", "auth_expiration_date", "next_review_date"):
+        return value
+
+    all_dates = [d for d in _EMBEDDED_DATE_RE.findall(value or "") if _is_valid_date_token(d)]
+    if not all_dates:
+        return ""
+
+    if key == "auth_expiration_date":
+        return all_dates[-1]
+    return all_dates[0]
 
 
 def _ocr_normalize(text: str) -> str:
@@ -514,6 +548,14 @@ def _filter_tokens_by_field_type(
         name_parts = [w for w in re.split(r"[\s,]+", combined) if len(w) > 0]
         if len(name_parts) < 1 or len(combined) < 2:
             return []
+        # Reject ID-like strings masquerading as names (e.g., "0806WD89S").
+        compact = re.sub(r"[^A-Za-z0-9]", "", combined)
+        if compact:
+            digit_ratio = sum(1 for c in compact if c.isdigit()) / len(compact)
+            if digit_ratio > 0.35:
+                return []
+            if re.match(r"^[A-Z0-9]{6,}$", compact) and any(c.isdigit() for c in compact):
+                return []
         # Reject known label words (OCR grabbed a label as value)
         _name_reject_words = ("memberid", "member", "subscriber", "enrollee",
                               "provider", "authorization", "phone", "fax")
@@ -534,21 +576,47 @@ def _filter_tokens_by_field_type(
         return tokens
 
     if field_key == "provider_name":
-        combined = " ".join(t.text.strip() for t in tokens)
+        # Remove pure date/date-range tokens that often bleed into provider labels.
+        filtered_tokens = [t for t in tokens if not _DATE_RE.match(t.text.strip())]
+        if not filtered_tokens:
+            return []
+        combined = " ".join(t.text.strip() for t in filtered_tokens)
         combined_lower = combined.lower()
+        compact = re.sub(r"[^A-Za-z0-9]", "", combined)
+        if compact:
+            digit_ratio = sum(1 for c in compact if c.isdigit()) / len(compact)
+            if digit_ratio > 0.35:
+                return []
+        # Reject obvious label capture instead of value.
+        if (
+            combined.endswith(":")
+            or "provider name" in combined_lower
+            or "servicing provider" in combined_lower
+            or "requesting provider" in combined_lower
+        ):
+            return []
         # Must have at least 1 word with 3+ chars (single-word providers like "ProMedica" are valid)
         words = [w for w in combined.split() if len(w) > 0]
         if len(words) < 1 or len(combined) < 3:
+            return []
+        # Long prose sentences are not provider names.
+        if len(words) > 12:
+            return []
+        # Reject meaningless suffix-only captures (e.g., "LLC").
+        suffix_only = {"llc", "inc", "corp", "co", "ltd", "pllc"}
+        if all(w.lower().strip(".,") in suffix_only for w in words):
             return []
         # Reject letter closings, greetings, section headers, and prose
         _provider_reject = ("sincerely", "seriously", "dear", "regards", "attention",
                             "department", "yours truly", "location address",
                             "service location", "risk your", "physical health",
                             "coverage", "benefits", "eligibility",
-                            "please contact", "free language")
+                            "please contact", "free language",
+                            "you can ask", "appeal", "submitted within",
+                            "service authorization", "clinical peer", "reason for appealing")
         if any(w in combined_lower for w in _provider_reject):
             return []
-        return tokens
+        return filtered_tokens
 
     if field_key in ("provider_phone", "provider_fax"):
         # Take only the FIRST phone-like match (reject concatenated numbers)
@@ -781,6 +849,7 @@ def _find_field_by_label(
         if filtered:
             # Use filtered token text (may be trimmed, e.g., date fields)
             clean_value = _strip_label_prefix(field_key, filtered[0].text.strip())
+            clean_value = _normalize_date_value_for_field(field_key, clean_value)
             # Strip surrounding quotes
             if len(clean_value) >= 2 and clean_value[0] in ('"', "'") and clean_value[-1] in ('"', "'"):
                 clean_value = clean_value[1:-1].strip()
@@ -811,7 +880,7 @@ def _find_field_by_label(
                 if roi_w >= 0.005 and roi_h >= 0.003 and roi_w <= 0.9 and roi_h <= 0.3:
                     return ExtractionCandidate(
                         value=clean_value,
-                        method=ExtractionMethodEnum.TEMPLATE_OCR,
+                        method=ExtractionMethodEnum.OCR_LABEL,
                         confidence=confidence,
                         evidence_bbox=evidence_bbox,
                         evidence_text=clean_value,
@@ -847,8 +916,9 @@ def _find_field_by_label(
         return False
 
     value_tokens: list[OcrTokenSimple] = []
+    allow_pre_label_search = field_key in {"patient_name", "provider_name", "patient_dob"}
 
-    # Search right — stop at next label or large horizontal gap
+    # Search right first (label: value layout).
     right_candidates = []
     for token in tokens:
         if token in best_label_tokens:
@@ -859,22 +929,74 @@ def _find_field_by_label(
             right_candidates.append(token)
 
     right_candidates.sort(key=lambda t: t.x0)
-
-    # Take tokens until we hit a label, colon-ending token, large gap, or max 4 tokens
     for i, tok in enumerate(right_candidates[:4]):
-        # Stop if this token looks like a label (ends with ":" or is known label word)
         if _looks_like_label(tok.text):
             break
-        # Stop if there's a big horizontal gap from the previous token (>10% page width)
         if i > 0 and tok.x0 - right_candidates[i - 1].x1 > 0.10:
             break
         value_tokens.append(tok)
 
-    # If no right-tokens, try below — find first VALUE line below
+    # Some forms OCR as "VALUE  Label:" on the same row; try left/overlap.
+    if not value_tokens and allow_pre_label_search:
+        left_candidates = []
+        for token in tokens:
+            if token in best_label_tokens:
+                continue
+            same_line = abs(token.y0 - label_y0) < row_height * 0.8
+            left_or_overlap = token.x0 <= label_x0 + 0.02 and token.x1 <= label_x1 + 0.01
+            if same_line and left_or_overlap:
+                left_candidates.append(token)
+
+        left_candidates.sort(key=lambda t: t.x1, reverse=True)
+        picked_left: list[OcrTokenSimple] = []
+        prev_x0 = None
+        for tok in left_candidates:
+            if _looks_like_label(tok.text):
+                continue
+            if prev_x0 is not None and prev_x0 - tok.x1 > 0.10:
+                break
+            picked_left.append(tok)
+            prev_x0 = tok.x0
+            if len(picked_left) >= 4:
+                break
+        if picked_left:
+            value_tokens = list(reversed(picked_left))
+
+    # Some forms place value above label; prefer closest row above before below.
+    if not value_tokens and allow_pre_label_search:
+        above_candidates = []
+        above_min_y = max(0.0, label_y0 - max(row_height * 2.5, 0.06))
+        col_x0 = label_x0 - 0.06
+        col_x1 = label_x1 + 0.06
+        for token in tokens:
+            if token in best_label_tokens:
+                continue
+            above = above_min_y <= token.y1 <= label_y0 + 0.005
+            h_close = token.x0 < col_x1 and token.x1 > col_x0
+            if above and h_close:
+                above_candidates.append(token)
+
+        above_candidates.sort(key=lambda t: (t.y1, t.x0), reverse=True)
+        if above_candidates:
+            reference_y = None
+            for tok in above_candidates:
+                if _looks_like_label(tok.text):
+                    continue
+                reference_y = tok.y0
+                break
+            if reference_y is not None:
+                same_row = [
+                    tok for tok in above_candidates
+                    if not _looks_like_label(tok.text)
+                    and abs(tok.y0 - reference_y) <= max(row_height * 0.8, 0.012)
+                ]
+                same_row.sort(key=lambda t: t.x0)
+                value_tokens = same_row[:4]
+
+    # If still empty, try below.
     if not value_tokens:
         below_candidates = []
         below_max_y = label_y1 + max(row_height * 2.5, 0.06)
-        # Column alignment: tight tolerance from label position
         col_x0 = label_x0 - 0.03
         col_x1 = label_x1 + 0.06
         for token in tokens:
@@ -886,7 +1008,6 @@ def _find_field_by_label(
                 below_candidates.append(token)
 
         below_candidates.sort(key=lambda t: (t.y0, t.x0))
-        # Skip leading label tokens to find the first value line
         if below_candidates:
             first_value_line = None
             for tok in below_candidates:
@@ -898,9 +1019,9 @@ def _find_field_by_label(
                     if tok.line_number < first_value_line:
                         continue
                     if tok.line_number > first_value_line + 1:
-                        break  # Allow 2 value lines (handles codes on 2nd line)
+                        break
                     if _looks_like_label(tok.text):
-                        continue  # Skip labels, don't break (tight col alignment prevents cross-column)
+                        continue
                     value_tokens.append(tok)
                     if len(value_tokens) >= 4:
                         break
@@ -914,6 +1035,7 @@ def _find_field_by_label(
         return None
 
     value_text = _strip_label_prefix(field_key, " ".join(t.text for t in value_tokens).strip())
+    value_text = _normalize_date_value_for_field(field_key, value_text)
     if not value_text:
         return None
 
@@ -967,7 +1089,7 @@ def _find_field_by_label(
 
     return ExtractionCandidate(
         value=value_text,
-        method=ExtractionMethodEnum.TEMPLATE_OCR,  # OCR-based extraction
+        method=ExtractionMethodEnum.OCR_LABEL,  # OCR label-based extraction
         confidence=confidence,
         evidence_bbox=evidence_bbox,
         evidence_text=value_text,

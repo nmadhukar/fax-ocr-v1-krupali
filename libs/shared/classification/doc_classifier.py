@@ -54,6 +54,8 @@ _DOC_TYPE_PATTERNS: dict[str, dict[str, list[str]]] = {
             r"(?i)\bapproval\s+(?:letter|notice)\b",
             r"(?i)(?:services?\s+(?:are|is)\s+)?approved\s+as\s+follows",
             r"(?i)no\s+(?:prior\s+)?(?:auth(?:orization)?|PA)\s+(?:is\s+)?(?:needed|required)",
+            r"(?i)(?:prior\s+)?auth(?:orization)?\s+(?:is\s+)?not\s+required",
+            r"(?i)authorization\s+number.*tracking\s+purposes\s+only.*prior\s+auth(?:orization)?\s+is\s+not\s+required",
         ],
         "weak": [
             r"(?i)effective\s+date",
@@ -110,6 +112,10 @@ _DOC_TYPE_PATTERNS: dict[str, dict[str, list[str]]] = {
             # Use [\s.]+ to handle OCR errors (periods instead of spaces).
             r"(?i)peer[\s.\-]+to[\s.\-]+peer[\s.]+review[\s.]*was[\s.]+completed",
             r"(?i)(?:denial|decision)[\s.]*was[\s.]+upheld",
+            # Conditional appeal language appears in approvals too:
+            # "If the determination is a denial ... denial notification".
+            r"(?i)if\s+(?:the\s+)?determination\s+is\s+a\s+denial",
+            r"(?i)can\s+be\s+requested.*denial\s+notification",
         ],
     },
     "PEER_TO_PEER_DENIAL": {
@@ -305,4 +311,3 @@ class DocClassifier:
             all_scores=scores,
             decision_value=decision,
         )
-

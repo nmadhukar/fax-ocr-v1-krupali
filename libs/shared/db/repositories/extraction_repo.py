@@ -109,7 +109,11 @@ class ExtractedFieldRepository(BaseRepository[FaxExtractedField]):
                     evidence_text=evidence_text,
                 )
                 .on_conflict_do_update(
-                    constraint="uq_extracted_field_job_key_method",
+                    index_elements=[
+                        FaxExtractedField.fax_job_id,
+                        FaxExtractedField.field_key,
+                        FaxExtractedField.method,
+                    ],
                     set_={
                         "field_value": field_value,
                         "field_conf": field_conf,

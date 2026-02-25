@@ -1,4 +1,4 @@
-"""
+﻿"""
 Database enum types.
 
 These match the PostgreSQL ENUM types defined in migrations.
@@ -52,10 +52,11 @@ class ExtractionMethodEnum(str, enum.Enum):
     """Method used for field extraction."""
 
     TEMPLATE_OCR = "TEMPLATE_OCR"   # Label-anchored template extraction
-    OCR_LABEL = "OCR_LABEL"         # Regex/pattern-based OCR label extraction (non-template)
-    LAYOUTLM = "LAYOUTLM"           # LayoutLM Document QA model (sole VLM)
-    DONUT = "DONUT"                 # READ-ONLY legacy value — Donut removed, do NOT use for new extractions
+    OCR_LABEL = "OCR_LABEL"         # Regex/pattern-based OCR label extraction
+    LAYOUTLM = "LAYOUTLM"           # LayoutLM Document QA extraction
+    DONUT = "DONUT"                 # Legacy value (do not use for new extractions)
     VLM = "VLM"                     # Generic VLM fallback
-    HUMAN_REVIEW = "HUMAN_REVIEW"   # Human reviewer correction (authoritative)
+    HUMAN = "HUMAN"                 # Legacy persisted value
+    HUMAN_REVIEW = "HUMAN_REVIEW"   # Human reviewer correction
     HYBRID = "HYBRID"               # Multiple sources agreed
-    LLM = "LLM"                     # Reserved — not in use
+    LLM = "LLM"                     # Reserved value

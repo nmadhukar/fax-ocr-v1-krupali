@@ -171,6 +171,14 @@
     $("lightboxClose").addEventListener("click", close);
     overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
     document.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
+    $("reviewPages").addEventListener("click", (e) => {
+      const card = e.target.closest(".page-card[data-lightbox-src]");
+      if (!card) return;
+      const src = card.getAttribute("data-lightbox-src") || "";
+      const text = card.getAttribute("data-lightbox-caption") || "";
+      if (!src) return;
+      window.openLightbox(src, text);
+    });
 
     window.openLightbox = function (src, text) {
       img.src = src;
@@ -874,7 +882,7 @@
       const url = escapeAttr(page.image_url || "");
       const cap = `Page ${page.page_number} | ${page.width_px}x${page.height_px}`;
       return `
-        <article class="page-card" onclick="openLightbox('${url}', '${escapeAttr(cap)}')">
+        <article class="page-card" data-lightbox-src="${url}" data-lightbox-caption="${escapeAttr(cap)}">
           <img src="${url}" alt="Page ${escapeAttr(String(page.page_number))}" loading="lazy">
           <div class="page-caption">${escapeHtml(cap)}</div>
         </article>`;

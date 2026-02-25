@@ -335,8 +335,8 @@ def layoutlm_extraction(ctx: PipelineContext) -> None:
 
 
 def add_decision_from_classifier(ctx: PipelineContext) -> None:
-    """Add decision from doc classifier if not already present."""
-    if not ctx.decision_value or "decision" in ctx.candidates_by_field:
+    """Add decision from doc classifier as a strong candidate."""
+    if not ctx.decision_value:
         return
 
     decision_conf = max(0.80, float(ctx.job.doc_type_conf or 0.80))
@@ -345,8 +345,10 @@ def add_decision_from_classifier(ctx: PipelineContext) -> None:
         method=ExtractionMethodEnum.TEMPLATE_OCR,
         confidence=decision_conf,
     )
-    ctx.candidates_by_field["decision"] = [candidate]
-    ctx.raw_candidates_by_field["decision"] = [candidate.to_dict()]
+    existing = ctx.candidates_by_field.setdefault("decision", [])
+    if not any((c.value or "").strip().upper() == (ctx.decision_value or "").strip().upper() for c in existing):
+        existing.append(candidate)
+    ctx.raw_candidates_by_field.setdefault("decision", []).append(candidate.to_dict())
 
 
 def vlm_prescreening(ctx: PipelineContext) -> None:
