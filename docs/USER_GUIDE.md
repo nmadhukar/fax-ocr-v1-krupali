@@ -8,22 +8,23 @@ This guide is for **operational staff, system administrators, and reviewers** wh
 
 1. [System Overview for Users](#1-system-overview-for-users)
 2. [Getting Started](#2-getting-started)
-3. [Uploading Faxes](#3-uploading-faxes)
-4. [Checking Processing Status](#4-checking-processing-status)
-5. [Retrieving Extraction Results](#5-retrieving-extraction-results)
-6. [Understanding Extraction Output](#6-understanding-extraction-output)
-7. [Review Workflow — Step by Step](#7-review-workflow--step-by-step)
-8. [Template Administration](#8-template-administration)
-9. [Analytics Dashboard](#9-analytics-dashboard)
-10. [Model Version Management](#10-model-version-management)
-11. [Querying Historical Data](#11-querying-historical-data)
-12. [Supported Payers](#12-supported-payers)
-13. [Supported Document Types](#13-supported-document-types)
-14. [Extracted Fields Reference](#14-extracted-fields-reference)
-15. [Understanding Confidence Scores](#15-understanding-confidence-scores)
-16. [Common Workflows](#16-common-workflows)
-17. [Troubleshooting](#17-troubleshooting)
-18. [HIPAA & Security Notes](#18-hipaa--security-notes)
+3. [Operations Console UI](#3-operations-console-ui)
+4. [Uploading Faxes](#4-uploading-faxes)
+5. [Checking Processing Status](#5-checking-processing-status)
+6. [Retrieving Extraction Results](#6-retrieving-extraction-results)
+7. [Understanding Extraction Output](#7-understanding-extraction-output)
+8. [Review Workflow — Step by Step](#8-review-workflow--step-by-step)
+9. [Template Administration](#9-template-administration)
+10. [Analytics Dashboard](#10-analytics-dashboard)
+11. [Model Version Management](#11-model-version-management)
+12. [Querying Historical Data](#12-querying-historical-data)
+13. [Supported Payers](#13-supported-payers)
+14. [Supported Document Types](#14-supported-document-types)
+15. [Extracted Fields Reference](#15-extracted-fields-reference)
+16. [Understanding Confidence Scores](#16-understanding-confidence-scores)
+17. [Common Workflows](#17-common-workflows)
+18. [Troubleshooting](#18-troubleshooting)
+19. [HIPAA & Security Notes](#19-hipaa--security-notes)
 
 ---
 
@@ -92,7 +93,125 @@ When debug mode is enabled, Swagger UI is available at:
 
 ---
 
-## 3. Uploading Faxes
+## 3. Operations Console UI
+
+The Operations Console is a browser-based interface that consolidates all system workflows into a single professional UI. It is served directly by the Review API at **`http://your-server:8002/ui`**.
+
+### Accessing the Console
+
+Open your browser and navigate to:
+```
+http://localhost:8002/ui
+```
+
+The console requires no separate installation — it is bundled with the Review API and served as static files. The root URL (`http://localhost:8002/`) automatically redirects to `/ui/`.
+
+### Console Layout
+
+The interface has two main areas:
+
+| Area | Description |
+|------|-------------|
+| **Connection Profile** (left sidebar) | Configure API endpoints, JWT token, reviewer ID. Saved in browser `localStorage`. |
+| **Workspace** (main area) | Five tabs covering all system workflows. |
+
+### The Five Tabs
+
+#### Dashboard Tab
+
+A visual analytics overview with real-time charts and KPI cards. Click **Refresh Dashboard** to load data for a configurable lookback period (default 30 days). The dashboard displays:
+
+- **KPI Cards** — Total jobs, completed, failed, needs-review counts, auto-finalize rate, average confidence, and average processing time
+- **Processing Volume** — Bar chart showing daily processing volume over the lookback period
+- **Document Type Distribution** — Doughnut chart of document types (Prior Auth Form, Approval, Denial, etc.)
+- **Payer Performance** — Bar chart comparing auto-finalize rates across payers
+- **Confidence Distribution** — Bar chart showing confidence score distribution across all jobs
+
+#### Workflow Tab
+
+The primary operational workspace with five sections:
+
+| Section | Purpose |
+|---------|---------|
+| **Upload Fax** | Upload PDF/TIFF/PNG/JPEG documents with tenant ID and optional payer hint. Accepted file types: `.pdf`, `.tiff`, `.tif`, `.png`, `.jpg`, `.jpeg`. |
+| **Fax Jobs** | Browse and filter all fax jobs by status, tenant, with pagination. Click any job to select it for inspection or review. |
+| **Job Inspector** | Fetch the status, extraction results, or raw OCR data for a specific job by ID. |
+| **Review Queue (HITL)** | Load unclaimed or pending reviews. Claim reviews, release expired claims. Each queue item shows job ID, priority, claimed-by status, and review reasons. |
+| **Review Packet Workspace** | The full human-in-the-loop review interface. Displays page images with presigned URLs, extracted fields with confidence scores, flagged fields, and inline correction inputs. Submit corrections directly from this screen. |
+
+#### Templates Tab
+
+Complete template lifecycle management:
+
+| Section | Purpose |
+|---------|---------|
+| **Template Catalog** | List templates filtered by payer name and active status. |
+| **Create or Modify Template** | Create new templates (payer, doc type, name, description) or update/delete existing ones by ID. |
+| **Version Management** | Create template versions with matching thresholds (min score, pHash threshold, ORB min matches). Activate versions or update thresholds. |
+| **Samples and Fields** | Upload sample page images for a version. Define field ROI coordinates (x0, y0, x1, y1 in 0.0–1.0 range), target page, validation regex, and required flag. List all fields for a version. |
+| **Template Testing** | Test template matching against an uploaded image. Test field extraction for a specific version. Use the Suggest ROI tool to auto-detect field bounding boxes from a processed fax. |
+
+#### Intelligence Tab
+
+Data querying, analytics, and ML model management:
+
+| Section | Purpose |
+|---------|---------|
+| **Search Extracted Data** | Run Tier 1 (structured SQL), Tier 2 (semantic vector), or Tier 3 (summarizer) queries against historical extraction results. Results display in a table with fax job ID, field key, value, confidence, and similarity score. |
+| **Analytics Dashboard** | Run quality overview, all-payer comparison, single-payer analysis, feedback summary, or threshold recalibration reports. Configurable time window (days). |
+| **Model Version Management** | List model versions, view the active version for a model type, register new versions, promote a version to active, update metrics JSON, or delete versions. |
+
+#### API Console Tab
+
+A raw API explorer for advanced use:
+
+- Select a target service (Ingress, Review, Query, or Custom URL)
+- Choose HTTP method (GET, POST, PUT, PATCH, DELETE)
+- Specify the path, query string, and optional JSON body
+- View the full response including HTTP status, URL, and response data
+
+This is useful for endpoints not explicitly wired into the curated tab screens.
+
+### Connection Profile
+
+The sidebar contains five configuration fields:
+
+| Field | Default | Purpose |
+|-------|---------|---------|
+| **Ingress API Base URL** | `http://localhost:8001` | Upload and status API endpoint |
+| **Review API Base URL** | `http://localhost:8002` | Review, templates, analytics API endpoint |
+| **Query API Base URL** | `http://localhost:8003` | Query and search API endpoint |
+| **Bearer Token** | (empty) | JWT token for staging/production authentication |
+| **Reviewer ID** | (empty) | Your reviewer identifier for claiming and submitting reviews |
+
+Click **Save Profile** to persist settings to browser `localStorage`. Click **Test Health** to verify connectivity to all three API services. Click **Reset Defaults** to restore factory settings.
+
+### Activity Feed
+
+The sidebar displays a live activity feed showing the last 16 actions with timestamps. Activity items are color-coded:
+- **Info** (teal left border) — Normal operations
+- **Error** (red left border) — Failed API calls or validation errors
+
+### Toast Notifications
+
+Floating notifications appear in the bottom-right corner:
+- **Success** (green) — Operation completed successfully (auto-dismiss after 3.6 seconds)
+- **Error** (red) — Operation failed (auto-dismiss after 7 seconds)
+- **Info** (teal) — Informational messages (auto-dismiss after 3.6 seconds)
+
+### Keyboard and Accessibility
+
+The console is built with WCAG 2.1 AA compliance:
+- Full keyboard navigation with visible focus indicators on all interactive elements
+- WAI-ARIA tab pattern (`role="tablist"`, `role="tab"`, `role="tabpanel"`, `aria-selected`)
+- Live regions (`aria-live="polite"`) on the activity feed and toast notifications
+- Lightbox image viewer with `role="dialog"` and `aria-modal="true"`
+- Dynamic form inputs include descriptive `aria-label` attributes
+- `prefers-reduced-motion` media query disables animations for users who prefer reduced motion
+
+---
+
+## 4. Uploading Faxes
 
 ### Using cURL
 
@@ -127,7 +246,7 @@ If you upload the same file twice, the system returns the existing job instead o
 
 ---
 
-## 4. Checking Processing Status
+## 5. Checking Processing Status
 
 ```bash
 curl http://your-server:8001/v1/faxes/{fax_job_id} \
@@ -146,7 +265,7 @@ curl http://your-server:8001/v1/faxes/{fax_job_id} \
 
 ---
 
-## 5. Retrieving Extraction Results
+## 6. Retrieving Extraction Results
 
 ```bash
 curl http://your-server:8001/v1/faxes/{fax_job_id}/results \
@@ -157,7 +276,7 @@ Results are only available when the job status is `COMPLETED` or `NEEDS_REVIEW`.
 
 ---
 
-## 6. Understanding Extraction Output
+## 7. Understanding Extraction Output
 
 Each field in the results has four properties:
 
@@ -203,7 +322,7 @@ The results include a summary:
 
 ---
 
-## 7. Review Workflow — Step by Step
+## 8. Review Workflow — Step by Step
 
 When the system isn't confident about some fields, the job is routed for human review.
 
@@ -270,7 +389,7 @@ curl -X POST http://your-server:8002/v1/faxes/{fax_job_id}/review/submit \
 
 ---
 
-## 8. Template Administration
+## 9. Template Administration
 
 Templates define where the system should look for each field on a document. Admin access required.
 
@@ -299,7 +418,7 @@ Templates define where the system should look for each field on a document. Admi
 
 ---
 
-## 9. Analytics Dashboard
+## 10. Analytics Dashboard
 
 Admin users can access quality analytics to monitor system performance.
 
@@ -333,7 +452,7 @@ Shows which fields are most frequently corrected by reviewers — useful for ide
 
 ---
 
-## 10. Model Version Management
+## 11. Model Version Management
 
 The system uses LayoutLM (an AI model) for document understanding. Admins can manage model versions.
 
@@ -353,7 +472,7 @@ When the system fine-tunes a new model version:
 
 ---
 
-## 11. Querying Historical Data
+## 12. Querying Historical Data
 
 The Query API lets you search through historical extraction results.
 
@@ -381,7 +500,7 @@ curl -X POST http://your-server:8003/v1/query \
 
 ---
 
-## 12. Supported Payers
+## 13. Supported Payers
 
 | Payer | Enum Value | Member ID Format |
 |-------|-----------|------------------|
@@ -398,7 +517,7 @@ curl -X POST http://your-server:8003/v1/query \
 
 ---
 
-## 13. Supported Document Types
+## 14. Supported Document Types
 
 | Document Type | Enum Value | Description |
 |--------------|-----------|-------------|
@@ -414,7 +533,7 @@ curl -X POST http://your-server:8003/v1/query \
 
 ---
 
-## 14. Extracted Fields Reference
+## 15. Extracted Fields Reference
 
 ### Critical Fields
 
@@ -445,7 +564,7 @@ These fields are held to higher confidence thresholds and are always flagged if 
 
 ---
 
-## 15. Understanding Confidence Scores
+## 16. Understanding Confidence Scores
 
 ### What Confidence Means
 
@@ -468,7 +587,7 @@ The job's `overall_confidence` is a weighted average of all field confidences:
 
 ---
 
-## 16. Common Workflows
+## 17. Common Workflows
 
 ### Workflow 1: Bulk Upload from Fax Gateway
 
@@ -540,7 +659,7 @@ def get_fax_results(fax_job_id: str, token: str) -> dict:
 
 ---
 
-## 17. Troubleshooting
+## 18. Troubleshooting
 
 ### "Job stuck in PENDING"
 
@@ -574,7 +693,7 @@ def get_fax_results(fax_job_id: str, token: str) -> dict:
 
 ---
 
-## 18. HIPAA & Security Notes
+## 19. HIPAA & Security Notes
 
 ### Data Access Logging
 

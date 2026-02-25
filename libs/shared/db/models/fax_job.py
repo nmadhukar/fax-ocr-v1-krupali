@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import BigInteger, Boolean, Enum, Numeric, String, text
+from sqlalchemy import BigInteger, Boolean, Enum, ForeignKey, Numeric, String, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -65,6 +65,7 @@ class FaxJob(Base):
     # Template matching
     matched_template_version_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
+        ForeignKey("fax_template_version.template_version_id", ondelete="SET NULL"),
         default=None,
     )
     matched_template_score: Mapped[Decimal | None] = mapped_column(

@@ -35,9 +35,9 @@ scipy==1.12.0
 
 # VLM (LayoutLM Document QA)
 transformers==4.36.2
-peft>=0.4.0
+peft==0.7.1
 torch==2.1.2
-sentence-transformers>=2.2.0
+sentence-transformers==2.7.0
 
 # Auth
 python-jose[cryptography]==3.3.0

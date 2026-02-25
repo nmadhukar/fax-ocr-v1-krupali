@@ -2,11 +2,9 @@
 JWT authentication for FastAPI endpoints.
 
 Provides Bearer-token authentication via ``Authorization: Bearer <token>``
-headers.  In **development** mode (``ENVIRONMENT=development``), a
+headers. In development mode (``ENVIRONMENT=development``), a
 lightweight bypass allows requests without tokens by injecting a default
-dev user, so that local testing stays frictionless.
-
-Production deployments MUST set ``SECRET_KEY`` and ``ENVIRONMENT=production``.
+dev user.
 """
 
 from __future__ import annotations
@@ -23,8 +21,9 @@ from libs.shared.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-# Lazy import — jose is only needed when tokens are actually verified.
+# Lazy import - jose is only needed when tokens are actually verified.
 _jwt_mod = None
+_ALLOWED_JWT_ALGORITHMS = {"HS256", "HS384", "HS512"}
 
 
 def _jwt():
@@ -32,13 +31,26 @@ def _jwt():
     if _jwt_mod is None:
         try:
             from jose import jwt as _j
+
             _jwt_mod = _j
-        except ImportError:
+        except ImportError as exc:
             raise RuntimeError(
                 "python-jose[cryptography] is required for JWT auth. "
                 "Install with: pip install python-jose[cryptography]"
-            )
+            ) from exc
     return _jwt_mod
+
+
+def _get_validated_jwt_algorithm() -> str:
+    """Return configured JWT algorithm after strict allowlist validation."""
+    settings = get_settings()
+    algorithm = (settings.security.jwt_algorithm or "").upper().strip()
+    if algorithm not in _ALLOWED_JWT_ALGORITHMS:
+        raise RuntimeError(
+            f"Unsupported JWT algorithm '{settings.security.jwt_algorithm}'. "
+            f"Allowed values: {sorted(_ALLOWED_JWT_ALGORITHMS)}"
+        )
+    return algorithm
 
 
 # -----------------------------------------------------------------------
@@ -71,6 +83,7 @@ def create_access_token(
     """Create a signed JWT access token."""
     settings = get_settings()
     jwt = _jwt()
+    algorithm = _get_validated_jwt_algorithm()
 
     now = datetime.now(timezone.utc)
     expire = now + (
@@ -88,7 +101,7 @@ def create_access_token(
     return jwt.encode(
         payload,
         settings.security.secret_key.get_secret_value(),
-        algorithm=settings.security.jwt_algorithm,
+        algorithm=algorithm,
     )
 
 
@@ -103,12 +116,13 @@ def _decode_token(token: str) -> dict:
     """Decode and validate a JWT token."""
     settings = get_settings()
     jwt = _jwt()
+    algorithm = _get_validated_jwt_algorithm()
 
     try:
         payload = jwt.decode(
             token,
             settings.security.secret_key.get_secret_value(),
-            algorithms=[settings.security.jwt_algorithm],
+            algorithms=[algorithm],
         )
         return payload
     except Exception as exc:
@@ -117,7 +131,7 @@ def _decode_token(token: str) -> dict:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
-        )
+        ) from exc
 
 
 def _build_user(payload: dict) -> AuthUser:
@@ -152,10 +166,10 @@ async def get_current_user(
     ] = None,
 ) -> AuthUser:
     """
-    FastAPI dependency — returns the authenticated user.
+    FastAPI dependency - returns the authenticated user.
 
     In development mode, allows unauthenticated requests (returns a
-    default dev user).  In production, a valid Bearer token is required.
+    default dev user). In production, a valid Bearer token is required.
     """
     settings = get_settings()
 
@@ -165,7 +179,6 @@ async def get_current_user(
         request.state.user = user
         return user
 
-    # No token provided
     if settings.environment == "development":
         logger.warning(
             "Auth bypass: returning dev user (ENVIRONMENT=development). "
@@ -188,7 +201,7 @@ async def get_optional_user(
     ] = None,
 ) -> AuthUser | None:
     """
-    FastAPI dependency — returns user if token is present, else None.
+    FastAPI dependency - returns user if token is present, else None.
 
     Useful for endpoints that behave differently for authenticated
     vs. anonymous users (e.g., health checks).

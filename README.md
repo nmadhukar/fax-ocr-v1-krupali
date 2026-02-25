@@ -99,6 +99,7 @@ docker ps   # all containers should show (healthy)
 - Ingress API + Swagger: http://localhost:8001/docs
 - Review API + Swagger:  http://localhost:8002/docs
 - Query API + Swagger:   http://localhost:8003/docs
+- Operations UI Console: http://localhost:8002/ui
 - MinIO console:         http://localhost:9001
 
 ### Stop

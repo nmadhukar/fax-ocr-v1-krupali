@@ -55,9 +55,19 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Permissions-Policy"] = (
             "camera=(), microphone=(), geolocation=(), payment=()"
         )
-        # Allow Swagger UI CDN assets for /docs and /redoc; strict otherwise
+        # Allow Swagger UI and Operations UI assets; strict otherwise
         path = request.url.path
-        if path in ("/docs", "/redoc", "/openapi.json"):
+        if path.startswith("/ui"):
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; "
+                "script-src 'self' https://cdn.jsdelivr.net; "
+                "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+                "font-src 'self' https://fonts.gstatic.com data:; "
+                "img-src 'self' data: blob: http://localhost:* http://127.0.0.1:* http://host.docker.internal:*; "
+                "connect-src 'self' http://localhost:* http://127.0.0.1:* http://host.docker.internal:*; "
+                "frame-ancestors 'none'"
+            )
+        elif path in ("/docs", "/redoc", "/openapi.json"):
             response.headers["Content-Security-Policy"] = (
                 "default-src 'self'; "
                 "script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "

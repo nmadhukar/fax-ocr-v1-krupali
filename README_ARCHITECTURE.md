@@ -10,6 +10,7 @@ The system is built as a set of loosely coupled services that communicate throug
 
 ```
          CLIENT APPLICATION
+         (EMR Systems, Fax Gateways)
                |
        HTTP (REST/JSON)
                |
@@ -17,11 +18,12 @@ The system is built as a set of loosely coupled services that communicate throug
     |                       |
  Ingress API            Review API            Query API
  (port 8001)            (port 8002)           (port 8003)
-    |                       |
-    |  Celery task queue     |  Read/write
-    |  (Redis)               |
-    v                       |
- Processing Worker  --------+
+    |                    |     |
+    |                    |     +-- Operations Console UI (/ui)
+    |  Celery task queue |        (HTML + CSS + vanilla JS)
+    |  (Redis)           |  Read/write
+    v                    |
+ Processing Worker  -----+
     |
     | Reads/writes
     v
@@ -75,6 +77,7 @@ This service has no processing logic. It delegates all work to the worker via th
 ### Fax Review API (port 8002)
 
 Responsibilities:
+- **Serve the Operations Console UI** — A browser-based SPA at `/ui` that consolidates all system workflows (upload, review, templates, analytics, query, model management) into a single professional interface. Built with vanilla HTML/CSS/JS (zero dependencies, no build step).
 - Serve the review queue (jobs flagged for human attention)
 - Accept reviewer corrections and apply them back to extraction data
 - Provide template management (CRUD for payer form templates)

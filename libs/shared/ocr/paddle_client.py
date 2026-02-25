@@ -90,7 +90,7 @@ class PaddleOcrClient(OcrClient):
 
         Args:
             image: Input image as numpy array.
-            detect_tables: Whether to detect tables (not yet implemented).
+            detect_tables: Whether downstream table parsers should be enabled.
 
         Returns:
             OcrResult with all extracted tokens.

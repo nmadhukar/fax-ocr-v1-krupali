@@ -233,7 +233,7 @@ class FaxFeedback(Base):
     )
     review_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("fax_review.review_id", ondelete="SET NULL"),
+        ForeignKey("fax_review.review_id", ondelete="CASCADE"),
         default=None,
     )
 

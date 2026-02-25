@@ -5,7 +5,7 @@ FaxJob repository with specialized queries.
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, text as sa_text
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from libs.shared.db.models.enums import FaxJobStatusEnum, PayerNameEnum
@@ -122,23 +122,47 @@ class FaxJobRepository(BaseRepository[FaxJob]):
         Returns:
             List of FaxJob instances now marked PROCESSING.
         """
+        now = datetime.now(timezone.utc)
+        lock_and_update = sa_text(
+            """
+            WITH locked AS (
+                SELECT fax_job_id
+                FROM fax_job
+                WHERE status = CAST(:pending_status AS fax_job_status_enum)
+                ORDER BY created_at ASC
+                FOR UPDATE SKIP LOCKED
+                LIMIT :limit_rows
+            )
+            UPDATE fax_job j
+            SET
+                status = CAST(:processing_status AS fax_job_status_enum),
+                processing_started_at = :started_at
+            FROM locked
+            WHERE j.fax_job_id = locked.fax_job_id
+            RETURNING j.fax_job_id
+            """
+        )
+        ids = list(
+            self.db.execute(
+                lock_and_update,
+                {
+                    "pending_status": FaxJobStatusEnum.PENDING.value,
+                    "processing_status": FaxJobStatusEnum.PROCESSING.value,
+                    "started_at": now,
+                    "limit_rows": limit,
+                },
+            ).scalars()
+        )
+        if not ids:
+            return []
+
         stmt = (
             select(FaxJob)
-            .where(FaxJob.status == FaxJobStatusEnum.PENDING)
+            .where(FaxJob.fax_job_id.in_(ids))
             .order_by(FaxJob.created_at.asc())
-            .limit(limit)
-            .with_for_update(skip_locked=True)
         )
         jobs = list(self.db.execute(stmt).scalars().all())
-
-        # Mark as PROCESSING while rows are still locked
-        for job in jobs:
-            job.status = FaxJobStatusEnum.PROCESSING
-            job.processing_started_at = datetime.now(timezone.utc)
-
-        if jobs:
-            self.db.flush()
-
+        self.db.flush()
         return jobs
 
     def get_jobs_needing_review(

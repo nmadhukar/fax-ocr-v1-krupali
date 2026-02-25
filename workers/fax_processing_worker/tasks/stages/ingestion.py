@@ -45,11 +45,25 @@ _AUTH_CONTENT_KEYWORDS = [
 def load_and_split(ctx: PipelineContext) -> None:
     """Step 1-2: Download file from storage and split into page images."""
     file_bytes = ctx.storage.download(ctx.job.file_storage_key)
+    if not file_bytes:
+        raise ValueError(
+            f"Downloaded file is empty for job {ctx.fax_job_id}: {ctx.job.original_filename}"
+        )
 
     # Import page splitter from the parent module
     from workers.fax_processing_worker.tasks.process_fax import split_to_pages
 
-    ctx.pages = split_to_pages(file_bytes, ctx.job.original_filename)
+    try:
+        ctx.pages = split_to_pages(file_bytes, ctx.job.original_filename)
+    except Exception as exc:
+        raise ValueError(
+            f"Failed to parse fax document '{ctx.job.original_filename}': {exc}"
+        ) from exc
+
+    if not ctx.pages:
+        raise ValueError(
+            f"Document contains no pages: {ctx.job.original_filename}"
+        )
     ctx.job.total_pages = len(ctx.pages)
 
 
@@ -66,12 +80,23 @@ def preprocess_and_ocr(ctx: PipelineContext) -> None:
         ctx.db.execute(sa_text(stmt), {"jid": str(ctx.job_uuid)})
     ctx.db.flush()
 
+    pages_with_tokens = 0
     for page_num, page_image in enumerate(ctx.pages, start=1):
+        if page_image is None or not hasattr(page_image, "shape"):
+            logger.warning(
+                "Skipping invalid page image at page %d for job %s",
+                page_num, ctx.fax_job_id,
+            )
+            continue
         height, width = page_image.shape[:2]
 
         # Store original page image
         page_storage_key = f"{ctx.job.file_storage_key}_page_{page_num}.png"
-        _, page_png = cv2.imencode(".png", page_image)
+        ok, page_png = cv2.imencode(".png", page_image)
+        if not ok or page_png is None:
+            raise RuntimeError(
+                f"Failed to encode page {page_num} as PNG for job {ctx.fax_job_id}"
+            )
         ctx.storage.upload(
             key=page_storage_key,
             data=page_png.tobytes(),
@@ -80,6 +105,13 @@ def preprocess_and_ocr(ctx: PipelineContext) -> None:
 
         # Preprocess
         processed, page_quality = ctx.preprocessor.preprocess(page_image)
+        if processed is None:
+            logger.warning(
+                "Preprocessing returned None for page %d of job %s; using original image",
+                page_num,
+                ctx.fax_job_id,
+            )
+            processed = page_image
 
         # Create page record
         fax_page = FaxPage(
@@ -98,7 +130,16 @@ def preprocess_and_ocr(ctx: PipelineContext) -> None:
         ctx.page_id_map[page_num] = fax_page.fax_page_id
 
         # OCR extraction
-        ocr_result = ctx.ocr_client.extract(processed)
+        try:
+            ocr_result = ctx.ocr_client.extract(processed)
+        except Exception:
+            logger.warning(
+                "OCR failed for page %d of job %s",
+                page_num,
+                ctx.fax_job_id,
+                exc_info=True,
+            )
+            continue
 
         tokens_data = []
         if ocr_result is None or not hasattr(ocr_result, "tokens"):
@@ -115,6 +156,18 @@ def preprocess_and_ocr(ctx: PipelineContext) -> None:
 
         if tokens_data:
             ctx.token_repo.bulk_insert(tokens_data)
+            pages_with_tokens += 1
+        else:
+            logger.warning(
+                "OCR produced zero tokens for page %d of job %s",
+                page_num,
+                ctx.fax_job_id,
+            )
+
+    if pages_with_tokens == 0:
+        raise RuntimeError(
+            f"OCR produced zero tokens for all pages in job {ctx.fax_job_id}"
+        )
 
     ctx.db.commit()
 
@@ -174,7 +227,7 @@ def composite_document_detection(ctx: PipelineContext) -> None:
     split_result = splitter.detect_segments(page_texts_for_split, cover_page_set)
     ctx.split_meta = split_result.to_dict()
 
-    if split_result.is_composite:
+    if split_result.is_composite and split_result.segments:
         best_seg = max(split_result.segments, key=lambda s: s.payer_confidence)
         ctx.active_page_numbers = set(best_seg.content_pages)
 
@@ -187,6 +240,11 @@ def composite_document_detection(ctx: PipelineContext) -> None:
         )
         # Keep downstream extraction/scanners strictly scoped to the selected segment.
         _rebuild_ocr_text(ctx)
+    elif split_result.is_composite:
+        logger.warning(
+            "Composite detection returned no segments for job %s; using full document",
+            ctx.fax_job_id,
+        )
 
 
 def generate_embeddings(ctx: PipelineContext) -> None:
@@ -208,17 +266,32 @@ def generate_embeddings(ctx: PipelineContext) -> None:
         chunks = emb_client.chunk_text(clean_text)
         if chunks:
             vectors = emb_client.encode(chunks)
+            pair_count = min(len(chunks), len(vectors))
+            if pair_count == 0:
+                logger.warning(
+                    "Embedding model returned zero vectors for %d chunks [job=%s]",
+                    len(chunks),
+                    ctx.fax_job_id,
+                )
+                return
+            if pair_count != len(chunks):
+                logger.warning(
+                    "Embedding vector count mismatch: %d chunks vs %d vectors [job=%s]",
+                    len(chunks),
+                    len(vectors),
+                    ctx.fax_job_id,
+                )
             emb_rows = [
                 {
                     "fax_job_id": ctx.job_uuid,
                     "fax_page_id": None,
-                    "embedding": vec,
-                    "source_text": chunk,
+                    "embedding": vectors[idx],
+                    "source_text": chunks[idx],
                     "source_type": "page_text",
                     "chunk_index": idx,
-                    "token_count": len(chunk.split()),
+                    "token_count": len(chunks[idx].split()),
                 }
-                for idx, (chunk, vec) in enumerate(zip(chunks, vectors))
+                for idx in range(pair_count)
             ]
             count = emb_repo.bulk_insert_embeddings(emb_rows)
             ctx.db.flush()

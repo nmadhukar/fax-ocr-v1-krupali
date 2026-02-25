@@ -2,6 +2,8 @@
 
 Complete endpoint reference for all three FastAPI services. All endpoints require JWT authentication unless noted otherwise.
 
+> **Operations Console:** For a visual interface to all API operations, open `http://localhost:8002/ui` in your browser. The console covers upload, review, template management, analytics, query, and model management — no API calls required. See the [User Guide](USER_GUIDE.md#3-operations-console-ui) for details.
+
 ---
 
 ## Table of Contents
@@ -312,6 +314,7 @@ Deletes the job, associated files from MinIO, and all related database records (
 ## 3. Fax Review API (Port 8002)
 
 **Base URL:** `http://localhost:8002`
+**Operations Console:** `http://localhost:8002/ui` (always available)
 **Swagger UI:** `http://localhost:8002/docs` (when `API_DEBUG=true`)
 
 ---

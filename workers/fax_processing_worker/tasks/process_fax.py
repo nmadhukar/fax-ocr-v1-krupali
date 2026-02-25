@@ -10,7 +10,7 @@ Orchestrates the complete processing pipeline (NO paid APIs):
   4b. Generate embeddings (sentence-transformers all-MiniLM-L6-v2)
   5.  Payer auto-detection          (keyword-based)
   6.  Template matching             (pHash + ORB/FLANN)
-  7.  Document classification       (keyword/regex stub)
+  7.  Document classification       (keyword/regex)
   8.  Template-based field extraction (PRIMARY)
   10. Multi-source merge via FieldBuilder
   11. Field validation + canonicalization
@@ -18,8 +18,8 @@ Orchestrates the complete processing pipeline (NO paid APIs):
   13. Weighted confidence scoring
   14. Determine review routing
   15. Store final extraction
-  16. Create review / call TaskClient stub if needed
-  17. Finalize / call PriorAuthClient stub if auto-approved
+  16. Create review / create workflow task if needed
+  17. Finalize / attach extraction to prior-auth case if auto-approved
 
 Pipeline logic is delegated to stage modules in
 ``workers.fax_processing_worker.tasks.stages``.
@@ -75,9 +75,6 @@ from libs.shared.utils.image_utils import ImagePreprocessor
 from libs.shared.extraction.validators import FieldValidator
 from libs.shared.extraction.cross_field_validator import CrossFieldValidator
 from libs.shared.extraction.hitl import compute_field_flags
-from libs.shared.clients.task_client import TaskClient
-from libs.shared.clients.prior_auth_client import PriorAuthClient
-
 import threading as _threading
 
 logger = logging.getLogger(__name__)
@@ -239,6 +236,9 @@ def process_fax_task(self, fax_job_id: str, tenant_id: str) -> dict[str, Any]:
             }
 
         except Exception as e:
+            # Roll back any partial stage writes before marking the job failed.
+            # Prevents half-written pages/tokens/reviews from being committed.
+            db.rollback()
             job_repo.mark_failed(job_uuid, str(e))
             db.commit()
             raise

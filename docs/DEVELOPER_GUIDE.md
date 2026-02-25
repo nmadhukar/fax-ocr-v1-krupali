@@ -19,9 +19,10 @@ This guide covers local development setup, project structure walkthrough, how to
 11. [Testing Guide](#11-testing-guide)
 12. [Database Migrations](#12-database-migrations)
 13. [Docker Development](#13-docker-development)
-14. [Debugging & Troubleshooting](#14-debugging--troubleshooting)
-15. [Code Quality Standards](#15-code-quality-standards)
-16. [Performance Tuning](#16-performance-tuning)
+14. [Operations Console UI — Front-End Architecture](#14-operations-console-ui--front-end-architecture)
+15. [Debugging & Troubleshooting](#15-debugging--troubleshooting)
+16. [Code Quality Standards](#16-code-quality-standards)
+17. [Performance Tuning](#17-performance-tuning)
 
 ---
 
@@ -187,6 +188,10 @@ fax_ocr_v1_krupali/
 ├── services/                       # 3 FastAPI services (thin routing layer)
 │   ├── fax_ingress_api/            #   Port 8001: Upload, status, results
 │   ├── fax_review_api/             #   Port 8002: Templates, review, analytics, models
+│   │   └── ui/                     #     Operations Console (browser SPA)
+│   │       ├── index.html          #       HTML structure (~834 lines)
+│   │       ├── app.js              #       Application logic (~1136 lines)
+│   │       └── styles.css          #       Styling & design system (~1116 lines)
 │   └── fax_query_api/              #   Port 8003: Query results
 │
 ├── workers/                        # Celery background workers
@@ -761,7 +766,221 @@ The worker needs the most memory because it loads PaddleOCR (~100MB), LayoutLM (
 
 ---
 
-## 14. Debugging & Troubleshooting
+## 14. Operations Console UI — Front-End Architecture
+
+The Operations Console is a single-page application served by the Review API at `/ui`. It provides a professional browser-based interface for all system workflows.
+
+### File Structure
+
+```
+services/fax_review_api/ui/
+├── index.html    # ~834 lines — Main HTML document, all markup and structure
+├── app.js        # ~1136 lines — Complete application logic (vanilla JavaScript)
+└── styles.css    # ~1116 lines — Full styling with CSS custom properties
+```
+
+All three files are served as static assets by FastAPI's `StaticFiles` middleware, mounted at `/ui` with `html=True` in `services/fax_review_api/main.py`.
+
+### Technology Choices
+
+| Aspect | Choice | Rationale |
+|--------|--------|-----------|
+| **Framework** | None (vanilla JS) | Zero build step, zero dependencies, instant loading |
+| **Module pattern** | IIFE (`(function() { ... })()`) | Prevents global scope pollution |
+| **State management** | Single `state` object + `localStorage` | Simple, no library overhead |
+| **CSS architecture** | CSS custom properties (`:root` variables) | Consistent theming, easy to modify |
+| **Typography** | Sora (sans) + IBM Plex Mono (mono) | Professional healthcare aesthetic |
+| **Layout** | CSS Grid + Flexbox | Responsive, no framework needed |
+| **API communication** | `fetch()` API | Native browser, no Axios/jQuery dependency |
+
+### Application Architecture
+
+#### State Management
+
+```javascript
+const state = {
+  profile: { ...DEFAULT_PROFILE },  // Connection settings (persisted to localStorage)
+  reviewPacket: null,                // Currently loaded review packet data
+};
+```
+
+The `profile` object contains API base URLs, JWT token, and reviewer ID. It is hydrated from `localStorage` on page load via `hydrateProfile()` and persisted on save via `persistProfile()`. Both operations are wrapped in try/catch to handle private browsing mode and storage quota exceeded errors.
+
+#### Initialization Flow
+
+On `DOMContentLoaded`, the `init()` function runs:
+
+1. `hydrateProfile()` — Load saved profile from `localStorage`
+2. `applyProfileToInputs()` — Populate form fields with saved values
+3. `bindTabs()` — Attach WAI-ARIA tab navigation with `aria-selected` state
+4. `bindConfigPanel()` — Wire save/reset/health-test buttons
+5. `bindDashboard()` — Wire the Dashboard tab (analytics charts, KPI refresh)
+6. `bindWorkflow()` — Wire all Workflow tab forms and event handlers
+7. `bindTemplates()` — Wire all Templates tab forms and event handlers
+8. `bindIntelligence()` — Wire Intelligence tab (query, analytics, models)
+9. `bindApiConsole()` — Wire the raw API console form
+9. `animateReveals()` — Set staggered animation delays on `.reveal` elements
+10. `syncStatusPills()` — Update environment/auth status pills in the hero
+
+#### API Communication Layer
+
+All API calls go through a single `apiRequest(service, path, options)` function:
+
+```javascript
+apiRequest("review", "/v1/faxes/reviews/unclaimed", {
+  method: "GET",
+  query: { limit: 100, skip: 0 },
+});
+```
+
+The function:
+- Resolves the base URL from the connection profile based on `service` name
+- Constructs the full URL with query parameters using the `URL` API
+- Attaches the JWT Bearer token if configured
+- Handles `FormData` (for file uploads) and JSON bodies
+- Parses the response as JSON (with fallback to raw text)
+- Throws enriched error objects with `status`, `serviceName`, and `payload` for error handling
+
+#### Button Busy State Pattern
+
+All async operations use `withButtonBusy(button, busyLabel, action, errorOutputElement)`:
+
+1. Disables the button and changes its text to the busy label
+2. Executes the async action
+3. On error, renders error details to the output element and shows a toast
+4. Re-enables the button and restores original text in `finally`
+
+Errors are caught and displayed — they do not re-throw, so the user always gets feedback.
+
+### Security Measures
+
+| Measure | Implementation |
+|---------|---------------|
+| **XSS prevention** | All dynamic content uses `escapeHtml()` and `escapeAttr()` before innerHTML injection |
+| **URL path encoding** | All URL path parameters use `encId()` → `encodeURIComponent(String(id))` to prevent path traversal |
+| **localStorage safety** | `hydrateProfile()` and `persistProfile()` wrapped in try/catch |
+| **Input sanitization** | All user inputs are `.trim()`-ed before use in API calls |
+| **Content-Type** | JSON bodies set `Content-Type: application/json`; file uploads use native `FormData` |
+
+### Accessibility (WCAG 2.1 AA)
+
+| Feature | Implementation |
+|---------|---------------|
+| **Tab navigation** | WAI-ARIA Tabs pattern: `role="tablist"`, `role="tab"`, `role="tabpanel"`, `aria-selected`, `aria-controls`, `aria-labelledby` |
+| **Focus indicators** | `:focus-visible` outlines on all buttons, inputs, selects, and textareas |
+| **Live regions** | `aria-live="polite"` on the activity feed and toast notification host |
+| **Lightbox** | Image viewer dialog with `role="dialog"`, `aria-modal="true"`, `aria-label` |
+| **Dynamic content** | Correction inputs and action buttons include descriptive `aria-label` |
+| **Reduced motion** | `@media (prefers-reduced-motion: reduce)` disables all animations |
+| **Color contrast** | All text colors meet WCAG AA contrast ratio (e.g., `--warn: #9a6003` on light background) |
+| **Print styles** | `@media print` hides decorative elements, removes backdrops, forces single-column layout |
+
+### CSS Design System
+
+The stylesheet uses CSS custom properties for consistent theming:
+
+```css
+:root {
+  --bg-0: #eef3f2;           /* Page background gradient start */
+  --bg-1: #f8f6ef;           /* Page background gradient end */
+  --panel: rgba(255,255,255,0.86); /* Glass-morphism panel */
+  --accent: #0f766e;         /* Primary teal accent */
+  --accent-strong: #0b5f59;  /* Hover state for accent */
+  --accent-soft: #d7f3ef;    /* Soft accent backgrounds */
+  --warn: #9a6003;           /* Warning text (WCAG AA compliant) */
+  --danger: #b42318;         /* Error/danger text */
+  --success: #12804a;        /* Success text */
+  --radius: 16px;            /* Standard border radius */
+  --radius-sm: 12px;         /* Small border radius */
+  --shadow: 0 18px 40px rgba(10,26,36,0.08); /* Card shadow */
+}
+```
+
+#### Responsive Breakpoints
+
+| Breakpoint | Layout Change |
+|------------|---------------|
+| `> 1200px` | Two-column grid: 330px sidebar + fluid workspace |
+| `860px–1200px` | Single-column: sidebar stacks above workspace |
+| `< 860px` | Hero stacks vertically, forms go single-column, tabs scroll horizontally |
+
+### How to Extend the UI
+
+#### Adding a New Tab
+
+1. Add a tab button in `index.html` inside the `nav.tabs` element:
+   ```html
+   <button class="tab" type="button" data-tab="newtab" id="tab-btn-newtab"
+           role="tab" aria-selected="false" aria-controls="tab-newtab">New Tab</button>
+   ```
+
+2. Add the tab panel section:
+   ```html
+   <section id="tab-newtab" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-newtab">
+     <article class="card reveal">
+       <h2>New Feature</h2>
+       <!-- Your content here -->
+     </article>
+   </section>
+   ```
+
+3. Create a `bindNewTab()` function in `app.js` and call it from `init()`.
+
+Tab switching is handled automatically by `bindTabs()` — no additional JavaScript is needed for navigation. The existing tabs are: Dashboard, Workflow, Templates, Intelligence, and API Console.
+
+#### Adding a New API Call
+
+Use the existing patterns:
+
+```javascript
+$("myForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await withButtonBusy(event.submitter, "Loading...", async () => {
+    const response = await apiRequest("review", "/v1/my-endpoint", {
+      method: "POST",
+      body: { key: $("myInput").value.trim() },
+    });
+    renderJson($("myOutput"), response.data);
+    toast("Operation complete.", "success");
+  }, $("myOutput"));
+});
+```
+
+#### Adding a New Data Table
+
+Use the existing table rendering pattern:
+
+```javascript
+function renderMyTable(items) {
+  $("myTableBody").innerHTML = items.map((item) => `
+    <tr>
+      <td>${escapeHtml(item.name)}</td>
+      <td>${escapeHtml(item.value)}</td>
+    </tr>
+  `).join("");
+}
+```
+
+Always use `escapeHtml()` for text content and `escapeAttr()` for HTML attribute values.
+
+### Key Utility Functions
+
+| Function | Purpose |
+|----------|---------|
+| `escapeHtml(value)` | Escape `&`, `<`, `>`, `"`, `'` for safe innerHTML |
+| `escapeAttr(value)` | Alias for `escapeHtml()` — use for HTML attributes |
+| `encId(id)` | `encodeURIComponent(String(id))` — safe URL path params |
+| `shortId(id)` | Truncate UUID to first 8 characters for display |
+| `renderJson(element, value)` | Pretty-print JSON into a `<pre>` block |
+| `toast(message, kind)` | Show floating notification (`success`, `error`, `info`) |
+| `addActivity(message, kind)` | Prepend timestamped entry to the activity feed |
+| `withButtonBusy(btn, label, fn, errEl)` | Disable button during async operation, handle errors |
+| `apiRequest(service, path, opts)` | Unified API communication with auth, error handling |
+| `parseJsonText(text, errMsg)` | Parse JSON with user-friendly error message on failure |
+
+---
+
+## 15. Debugging & Troubleshooting
 
 ### Common Issues
 
@@ -807,7 +1026,7 @@ celery -A workers.fax_processing_worker.celery_app inspect reserved
 
 ---
 
-## 15. Code Quality Standards
+## 16. Code Quality Standards
 
 ### Tools
 
@@ -836,7 +1055,7 @@ pre-commit install
 
 ---
 
-## 16. Performance Tuning
+## 17. Performance Tuning
 
 ### OCR Performance
 

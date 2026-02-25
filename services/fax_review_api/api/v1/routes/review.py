@@ -9,7 +9,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from libs.shared.config import get_settings
@@ -95,8 +95,8 @@ class ClaimResponse(BaseModel):
 class FieldCorrection(BaseModel):
     """Corrected field value."""
 
-    field_key: str
-    corrected_value: str
+    field_key: str = Field(..., min_length=1, max_length=100)
+    corrected_value: str = Field(..., min_length=1, max_length=2048)
     evidence_bbox: dict[str, float] | None = None
 
 
@@ -104,7 +104,7 @@ class SubmitRequest(BaseModel):
     """Request to submit a review."""
 
     reviewer_id: str | None = None
-    corrected_fields: list[FieldCorrection]
+    corrected_fields: list[FieldCorrection] = Field(default_factory=list, max_length=200)
 
 
 class SubmitResponse(BaseModel):

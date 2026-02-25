@@ -388,7 +388,8 @@ def _patient_name_recovery(fields: dict, scan_ocr: str, ctx: PipelineContext) ->
                 r"\s+(?:Requesting|Servicing|Ordering|Attending|Referring|Primary)\s+Provider.*$",
                 "", mn_val, flags=re.IGNORECASE,
             ).strip()
-            mn_val = re.sub(r"\s*\d.*$", "", mn_val).strip()
+            # Drop trailing long numeric IDs but preserve ordinal suffixes (e.g., "John 3rd").
+            mn_val = re.sub(r"\s+\d{4,}.*$", "", mn_val).strip()
             mn_val = mn_val.strip(",").strip()
             if len(mn_val) >= 3 and any(c.isalpha() for c in mn_val):
                 logger.info("Member Name OCR scan found patient_name (len=%d)", len(mn_val))
@@ -413,14 +414,15 @@ def _following_member_scan(fields: dict, scan_ocr: str) -> None:
         return
 
     fm_name = fm_m.group(1).strip().rstrip(",").strip()
-    fm_name = re.sub(r"\s*\d.*$", "", fm_name).strip()
+    # Drop trailing long numeric IDs but preserve ordinal suffixes in names.
+    fm_name = re.sub(r"\s+\d{4,}.*$", "", fm_name).strip()
     pn_current = (fields.get("patient_name") or {}).get("value") or ""
     if len(fm_name) >= 3 and any(c.isalpha() for c in fm_name):
         if not pn_current or pn_current.upper() != fm_name.upper():
             logger.info("patient_name 'following member' scan overrides previous value (len=%d → %d)", len(pn_current), len(fm_name))
             fields["patient_name"] = {
                 "value": fm_name,
-                "confidence": 0.85,
+                "confidence": 0.65,
                 "method": ExtractionMethodEnum.TEMPLATE_OCR.value,
                 "evidence_bbox": None,
                 "evidence_text": f"OCR: following member: {fm_name}",

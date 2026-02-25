@@ -17,6 +17,7 @@ FROM python:3.11-slim-bookworm AS builder
 # System deps needed for building native extensions
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    swig \
     libpq-dev \
     libgl1 \
     libglib2.0-0 \

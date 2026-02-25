@@ -1,14 +1,20 @@
 <!doctype html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Fax Operations Console</title>
+  <meta name="description"
+    content="Healthcare Fax OCR Pipeline — Upload, review, template-configure, validate extraction quality, and run API workflows.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link
+    href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Sora:wght@400;500;600;700&display=swap"
+    rel="stylesheet">
   <link rel="stylesheet" href="./styles.css">
 </head>
+
 <body>
   <div class="bg-orb orb-a"></div>
   <div class="bg-orb orb-b"></div>
@@ -23,6 +29,10 @@
       </p>
     </div>
     <div class="hero-meta">
+      <button id="themeToggle" class="theme-toggle" type="button" aria-label="Toggle dark mode">
+        <span class="icon" id="themeIcon">🌙</span>
+        <span id="themeLabel">Dark Mode</span>
+      </button>
       <span class="pill" id="envPill">Environment: Development</span>
       <span class="pill" id="authPill">Auth: Optional</span>
     </div>
@@ -65,12 +75,67 @@
 
     <section class="workspace">
       <nav class="tabs reveal" aria-label="Operations areas" role="tablist">
-        <button class="tab active" type="button" data-tab="workflow" id="tab-btn-workflow" role="tab" aria-selected="true" aria-controls="tab-workflow">Workflow</button>
-        <button class="tab" type="button" data-tab="templates" id="tab-btn-templates" role="tab" aria-selected="false" aria-controls="tab-templates">Templates</button>
-        <button class="tab" type="button" data-tab="intelligence" id="tab-btn-intelligence" role="tab" aria-selected="false" aria-controls="tab-intelligence">Intelligence</button>
-        <button class="tab" type="button" data-tab="api" id="tab-btn-api" role="tab" aria-selected="false" aria-controls="tab-api">API Console</button>
+        <button class="tab" type="button" data-tab="dashboard" id="tab-btn-dashboard" role="tab" aria-selected="false"
+          aria-controls="tab-dashboard">Dashboard</button>
+        <button class="tab active" type="button" data-tab="workflow" id="tab-btn-workflow" role="tab"
+          aria-selected="true" aria-controls="tab-workflow">Workflow</button>
+        <button class="tab" type="button" data-tab="templates" id="tab-btn-templates" role="tab" aria-selected="false"
+          aria-controls="tab-templates">Templates</button>
+        <button class="tab" type="button" data-tab="intelligence" id="tab-btn-intelligence" role="tab"
+          aria-selected="false" aria-controls="tab-intelligence">Intelligence</button>
+        <button class="tab" type="button" data-tab="api" id="tab-btn-api" role="tab" aria-selected="false"
+          aria-controls="tab-api">API Console</button>
       </nav>
 
+      <!-- ═══════════════════════════════════════
+           DASHBOARD TAB
+           ═══════════════════════════════════════ -->
+      <section id="tab-dashboard" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-dashboard">
+        <article class="card reveal">
+          <h2>Analytics Dashboard</h2>
+          <p class="panel-note">Visual overview of system quality, payer performance, and processing pipeline.</p>
+          <div class="button-row">
+            <button id="dashRefreshBtn" class="btn primary" type="button">Refresh Dashboard</button>
+            <label class="field" style="flex-direction:row;align-items:center;gap:0.5rem;">
+              <span>Lookback Days</span>
+              <input id="dashDays" type="number" min="1" max="365" value="30" style="width:80px;">
+            </label>
+          </div>
+
+          <div id="dashStats" class="dashboard-grid">
+            <div class="dashboard-empty">
+              <div class="icon">📊</div>
+              <p>Click <strong>Refresh Dashboard</strong> to load analytics</p>
+            </div>
+          </div>
+
+          <div id="dashCharts" class="chart-row" style="display:none;">
+            <div class="chart-card">
+              <h3>Processing Volume (30d)</h3>
+              <canvas id="chartVolume"></canvas>
+            </div>
+            <div class="chart-card">
+              <h3>Document Type Distribution</h3>
+              <canvas id="chartDocTypes"></canvas>
+            </div>
+          </div>
+
+          <div id="dashChartsRow2" class="chart-row" style="display:none;">
+            <div class="chart-card">
+              <h3>Payer Performance</h3>
+              <canvas id="chartPayers"></canvas>
+            </div>
+            <div class="chart-card">
+              <h3>Confidence Distribution</h3>
+              <canvas id="chartConfidence"></canvas>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <!-- ═══════════════════════════════════════
+           WORKFLOW TAB
+           ═══════════════════════════════════════ -->
       <section id="tab-workflow" class="tab-panel active" role="tabpanel" aria-labelledby="tab-btn-workflow">
         <article class="card reveal">
           <h2>Upload Fax</h2>
@@ -78,10 +143,12 @@
             <label class="field span-2">
               <span>Document File</span>
               <input id="uploadFile" type="file" required accept=".pdf,.tiff,.tif,.png,.jpg,.jpeg">
+              <span class="field-error" id="uploadFileError">Please select a PDF, TIFF, or image file.</span>
             </label>
             <label class="field">
               <span>Tenant ID</span>
               <input id="uploadTenant" type="text" value="dev-tenant" required>
+              <span class="field-error" id="uploadTenantError">Tenant ID is required.</span>
             </label>
             <label class="field">
               <span>Payer Hint (optional)</span>
@@ -99,7 +166,12 @@
         </article>
 
         <article class="card reveal">
-          <h2>Fax Jobs</h2>
+          <h2>
+            Fax Jobs
+            <span id="pollingBadge" class="polling-badge" style="display:none;">
+              <span class="dot"></span> Auto-refreshing
+            </span>
+          </h2>
           <form id="listJobsForm" class="form-grid">
             <label class="field">
               <span>Status Filter</span>
@@ -117,19 +189,15 @@
               <input id="jobsTenant" type="text" placeholder="tenant-id">
             </label>
             <label class="field">
-              <span>Skip</span>
-              <input id="jobsSkip" type="number" min="0" value="0">
-            </label>
-            <label class="field">
-              <span>Limit</span>
+              <span>Page Size</span>
               <input id="jobsLimit" type="number" min="1" max="500" value="25">
             </label>
-            <div class="span-2">
+            <div>
               <button class="btn primary" type="submit">Load Jobs</button>
             </div>
           </form>
           <div class="table-wrap">
-            <table aria-label="Fax jobs listing">
+            <table>
               <thead>
                 <tr>
                   <th>Fax Job ID</th>
@@ -144,6 +212,11 @@
               <tbody id="jobsTableBody"></tbody>
             </table>
           </div>
+          <div id="jobsPagination" class="pagination-bar" style="display:none;">
+            <button id="jobsPrevBtn" class="btn ghost sm" type="button" disabled>← Prev</button>
+            <span id="jobsPageIndicator" class="page-indicator">Page 1</span>
+            <button id="jobsNextBtn" class="btn ghost sm" type="button" disabled>Next →</button>
+          </div>
         </article>
 
         <article class="card reveal">
@@ -152,11 +225,13 @@
             <label class="field span-2">
               <span>Fax Job ID</span>
               <input id="inspectJobId" type="text" required>
+              <span class="field-error" id="inspectJobIdError">Enter a valid Fax Job ID.</span>
             </label>
             <div class="button-row span-2">
               <button class="btn primary" type="button" data-inspect-action="status">Get Status</button>
               <button class="btn ghost" type="button" data-inspect-action="results">Get Results</button>
               <button class="btn ghost" type="button" data-inspect-action="ocr">Get OCR</button>
+              <button class="btn danger sm" type="button" id="deleteJobBtn">Delete Job</button>
             </div>
           </form>
           <pre id="inspectOutput" class="code-block tall"></pre>
@@ -170,7 +245,7 @@
             <button id="releaseExpiredBtn" class="btn subtle" type="button">Release Expired Claims</button>
           </div>
           <div class="table-wrap">
-            <table aria-label="Review queue">
+            <table>
               <thead>
                 <tr>
                   <th>Fax Job ID</th>
@@ -201,12 +276,13 @@
 
           <div id="reviewMeta" class="meta-list"></div>
 
-          <h3>Selected Pages</h3>
+          <h3>Selected Pages <span style="font-size:0.72rem;color:var(--text-muted);font-weight:400;">(click to
+              zoom)</span></h3>
           <div id="reviewPages" class="page-grid"></div>
 
           <h3>Extracted Fields And Corrections</h3>
           <div class="table-wrap">
-            <table aria-label="Extracted fields and corrections">
+            <table>
               <thead>
                 <tr>
                   <th>Field</th>
@@ -224,6 +300,9 @@
         </article>
       </section>
 
+      <!-- ═══════════════════════════════════════
+           TEMPLATES TAB
+           ═══════════════════════════════════════ -->
       <section id="tab-templates" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-templates">
         <article class="card reveal">
           <h2>Template Catalog</h2>
@@ -244,7 +323,7 @@
             </div>
           </form>
           <div class="table-wrap">
-            <table aria-label="Template catalog">
+            <table>
               <thead>
                 <tr>
                   <th>Template ID</th>
@@ -265,14 +344,17 @@
             <label class="field">
               <span>Template Name</span>
               <input id="tplName" type="text" required>
+              <span class="field-error" id="tplNameError">Template name is required.</span>
             </label>
             <label class="field">
               <span>Payer Name</span>
               <input id="tplPayer" type="text" placeholder="HUMANA" required>
+              <span class="field-error" id="tplPayerError">Payer name is required.</span>
             </label>
             <label class="field">
               <span>Doc Type</span>
               <input id="tplDocType" type="text" placeholder="PRIOR_AUTH_FORM" required>
+              <span class="field-error" id="tplDocTypeError">Doc type is required.</span>
             </label>
             <label class="field">
               <span>Description</span>
@@ -383,7 +465,7 @@
             </label>
             <label class="field">
               <span>Sample Image</span>
-              <input id="sampleFile" type="file" required accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif">
+              <input id="sampleFile" type="file" required accept=".png,.jpg,.jpeg,.tiff,.tif">
             </label>
             <div class="span-2">
               <button class="btn primary" type="submit">Upload Sample</button>
@@ -451,7 +533,7 @@
           </form>
 
           <div class="table-wrap">
-            <table aria-label="Template fields">
+            <table>
               <thead>
                 <tr>
                   <th>Field Key</th>
@@ -472,7 +554,7 @@
           <form id="testMatchForm" class="form-grid">
             <label class="field">
               <span>Test Image</span>
-              <input id="testMatchFile" type="file" required accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif">
+              <input id="testMatchFile" type="file" required accept=".png,.jpg,.jpeg,.tiff,.tif">
             </label>
             <label class="field">
               <span>Payer Hint (optional)</span>
@@ -490,7 +572,7 @@
             </label>
             <label class="field">
               <span>Page Image</span>
-              <input id="testExtractFile" type="file" required accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif">
+              <input id="testExtractFile" type="file" required accept=".png,.jpg,.jpeg,.tiff,.tif">
             </label>
             <div class="span-2">
               <button class="btn ghost" type="submit">Run Test Extract</button>
@@ -522,6 +604,9 @@
         </article>
       </section>
 
+      <!-- ═══════════════════════════════════════
+           INTELLIGENCE TAB
+           ═══════════════════════════════════════ -->
       <section id="tab-intelligence" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-intelligence">
         <article class="card reveal">
           <h2>Search Extracted Data</h2>
@@ -529,13 +614,14 @@
             <label class="field span-2">
               <span>Query</span>
               <input id="queryText" type="text" placeholder="member_id or value fragment" required>
+              <span class="field-error" id="queryTextError">Enter a search query.</span>
             </label>
             <label class="field">
               <span>Tier</span>
               <select id="queryTier">
                 <option value="1">1 - Structured</option>
                 <option value="2">2 - Semantic</option>
-                <option value="3">3 - Summarizer (not implemented)</option>
+                <option value="3">3 - Summary Synthesis</option>
               </select>
             </label>
             <label class="field">
@@ -551,7 +637,7 @@
             </div>
           </form>
           <div class="table-wrap">
-            <table aria-label="Query results">
+            <table>
               <thead>
                 <tr>
                   <th>Fax Job ID</th>
@@ -680,6 +766,9 @@
         </article>
       </section>
 
+      <!-- ═══════════════════════════════════════
+           API CONSOLE TAB
+           ═══════════════════════════════════════ -->
       <section id="tab-api" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-api">
         <article class="card reveal">
           <h2>Advanced API Console</h2>
@@ -730,8 +819,17 @@
     </section>
   </main>
 
+  <!-- Image Lightbox -->
+  <div id="lightboxOverlay" class="lightbox-overlay" role="dialog" aria-modal="true" aria-label="Image viewer">
+    <button class="lightbox-close" id="lightboxClose" aria-label="Close image viewer">&times;</button>
+    <img id="lightboxImg" src="" alt="Enlarged page view">
+    <div class="lightbox-caption" id="lightboxCaption"></div>
+  </div>
+
   <div id="toastHost" class="toast-host" role="status" aria-live="polite"></div>
 
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="./app.js"></script>
 </body>
+
 </html>

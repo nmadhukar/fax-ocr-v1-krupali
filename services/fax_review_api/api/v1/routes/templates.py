@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 import cv2
 import numpy as np
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 
 from libs.shared.db.models.enums import DocTypeEnum, PayerNameEnum
@@ -111,6 +111,24 @@ class FieldCreate(BaseModel):
     target_page: int = 1
     validation_regex: str | None = None
     expected_type: str = "text"
+
+    @model_validator(mode="after")
+    def validate_roi_order(self) -> "FieldCreate":
+        """Ensure ROI coordinates define a non-empty box."""
+        if self.roi_x0 >= self.roi_x1:
+            raise ValueError("roi_x0 must be less than roi_x1")
+        if self.roi_y0 >= self.roi_y1:
+            raise ValueError("roi_y0 must be less than roi_y1")
+        # Validate regex is compilable and not catastrophically complex
+        if self.validation_regex is not None:
+            import re as _re
+            try:
+                compiled = _re.compile(self.validation_regex)
+                # Quick execution test to catch catastrophic backtracking
+                compiled.search("")
+            except _re.error as exc:
+                raise ValueError(f"Invalid validation_regex: {exc}") from exc
+        return self
 
 
 class FieldResponse(BaseModel):
@@ -622,6 +640,15 @@ def create_field(
         )
 
     field_repo = TemplateFieldRepository(db)
+
+    if data.validation_regex:
+        try:
+            re.compile(data.validation_regex)
+        except re.error as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid validation_regex: {exc}",
+            ) from exc
 
     field = FaxTemplateField(
         template_version_id=version_id,

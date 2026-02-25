@@ -169,13 +169,28 @@ fax_beat         Up
 
 ### Step 5 — Verify in browser
 
-Open all three API consoles and confirm they load:
+Open the Operations Console and API documentation:
 
-- **http://localhost:8001/docs** — Ingress API (upload, status, results)
-- **http://localhost:8002/docs** — Review API (human review queue)
-- **http://localhost:8003/docs** — Query API (search, analytics)
+- **http://localhost:8002/ui** — **Operations Console** (primary user interface)
+- **http://localhost:8001/docs** — Ingress API Swagger docs
+- **http://localhost:8002/docs** — Review API Swagger docs
+- **http://localhost:8003/docs** — Query API Swagger docs
 
-If you see the Swagger UI interface with a list of endpoints, the system is ready.
+**The Operations Console** (`/ui`) is the recommended way to interact with the system. It provides a professional browser-based interface with five tabs:
+
+| Tab | What You Can Do |
+|-----|----------------|
+| **Dashboard** | Visual analytics overview — KPI cards, processing volume chart, document type distribution, payer performance, confidence distribution |
+| **Workflow** | Upload faxes (PDF/TIFF/PNG/JPEG), browse jobs, inspect results, claim and review flagged documents, submit corrections |
+| **Templates** | Create/edit/delete payer templates, manage versions with matching thresholds, upload sample images, define field ROI coordinates, test template matching and extraction |
+| **Intelligence** | Search extracted data (structured and semantic), run analytics reports (quality, per-payer, feedback), manage ML model versions |
+| **API Console** | Execute raw API calls against any service for advanced exploration |
+
+The console saves your connection profile (API URLs, JWT token, reviewer ID) in browser `localStorage`, so settings persist across sessions.
+
+> **Tip:** The root URL `http://localhost:8002/` automatically redirects to the Operations Console at `/ui/`.
+
+If you see the Operations Console interface or Swagger UI loading, the system is ready.
 
 ---
 
@@ -329,7 +344,9 @@ Poll this endpoint until `status` changes from `PROCESSING`:
 
 ### Step D — Human Review (when `status = NEEDS_REVIEW`)
 
-This workflow is on **port 8002** — open **http://localhost:8002/docs**
+> **Recommended:** Use the **Operations Console** at **http://localhost:8002/ui** → **Workflow** tab for a visual review experience. The Review Queue section lets you browse unclaimed reviews, claim documents, view page images alongside extracted fields, and submit corrections inline — all without writing API calls.
+
+Alternatively, you can perform the review via the Swagger API docs at **http://localhost:8002/docs**.
 
 The review process has four steps:
 
@@ -494,6 +511,10 @@ After submission:
 ---
 
 ## 6. API Quick Reference
+
+### Operations Console — http://localhost:8002/ui
+
+The Operations Console is the primary browser interface for day-to-day operations. It covers uploading, reviewing, template management, analytics, querying, and model management — all from a single UI. See [the User Guide](docs/USER_GUIDE.md#3-operations-console-ui) for full documentation.
 
 ### Ingress API — http://localhost:8001
 

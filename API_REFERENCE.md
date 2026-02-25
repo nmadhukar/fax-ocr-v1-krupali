@@ -1,9 +1,12 @@
 # Healthcare Fax OCR — Complete API Reference
 
-> All three APIs expose an interactive browser console at `/docs` on their respective ports.
+> **Operations Console:** A professional browser UI at `http://localhost:8002/ui` provides a unified interface for all API operations — upload, review, templates, analytics, query, and model management.
+>
+> All three APIs also expose interactive Swagger documentation at `/docs` on their respective ports.
 > In development mode (`ENVIRONMENT=development`) no authentication token is required.
 
 **Base URLs:**
+- Operations Console: `http://localhost:8002/ui`
 - Ingress API: `http://localhost:8001`
 - Review API:  `http://localhost:8002`
 - Query API:   `http://localhost:8003`

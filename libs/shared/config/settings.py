@@ -198,7 +198,9 @@ class HitlSettings(BaseSettings):
 class ApiSettings(BaseSettings):
     """API server settings."""
 
-    model_config = SettingsConfigDict(env_prefix="API_")
+    # Disable automatic JSON decoding so comma-separated env vars like
+    # API_ALLOWED_ORIGINS work in Docker/.env files without JSON syntax.
+    model_config = SettingsConfigDict(env_prefix="API_", enable_decoding=False)
 
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8000)
@@ -212,6 +214,12 @@ class ApiSettings(BaseSettings):
             "http://localhost:8001",
             "http://localhost:8002",
             "http://localhost:8003",
+            "http://host.docker.internal:3000",
+            "http://host.docker.internal:5173",
+            "http://host.docker.internal:8000",
+            "http://host.docker.internal:8001",
+            "http://host.docker.internal:8002",
+            "http://host.docker.internal:8003",
         ]
     )
     allowed_hosts: list[str] = Field(
@@ -268,6 +276,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        enable_decoding=False,
     )
 
     # Sub-settings

@@ -13,6 +13,7 @@ from libs.shared.extraction.canonicalizer import FieldCanonicalizer
 from libs.shared.extraction.cross_field_validator import CrossFieldValidator
 from libs.shared.extraction.validators import FieldValidator
 from libs.shared.scoring.confidence_scorer import ConfidenceScorer
+from libs.shared.scoring.confidence_scorer import ScoringResult
 
 from . import PipelineContext
 
@@ -25,15 +26,22 @@ def validate_fields(ctx: PipelineContext) -> None:
     canonicalizer = FieldCanonicalizer()
 
     for field_key, field_data in ctx.extracted_fields.items():
-        value = field_data.get("value")
-        if not value:
+        if not isinstance(field_data, dict):
             continue
+
+        raw_value = field_data.get("value")
+        if raw_value is None:
+            continue
+        value = raw_value if isinstance(raw_value, str) else str(raw_value)
 
         val_result = validator.validate(
             field_key=field_key,
             value=value,
             payer_name=ctx.payer_str,
-            context={k: v.get("value") for k, v in ctx.extracted_fields.items()},
+            context={
+                k: (v.get("value") if isinstance(v, dict) else None)
+                for k, v in ctx.extracted_fields.items()
+            },
         )
 
         # Persist validation state on the merged payload so confidence scoring
@@ -79,6 +87,8 @@ def cross_field_checks(ctx: PipelineContext) -> None:
 
     if not ctx.cross_result.is_consistent:
         logger.warning("Cross-field inconsistencies: %s", ctx.cross_result.errors)
+        # Ensure cross-field problems influence review routing
+        ctx.needs_review = True
 
 
 def confidence_scoring(ctx: PipelineContext) -> None:
@@ -111,18 +121,35 @@ def confidence_scoring(ctx: PipelineContext) -> None:
             ctx.ocr_quality["avg_token_confidence"] = sum(token_confidences) / len(token_confidences)
 
     scorer = ConfidenceScorer()
-    ctx.scoring_result = scorer.score(
-        fields=ctx.extracted_fields,
-        payer_name=ctx.payer_str,
-        candidates_by_field=ctx.raw_candidates_by_field,
-        ocr_quality=ctx.ocr_quality,
-    )
+    try:
+        ctx.scoring_result = scorer.score(
+            fields=ctx.extracted_fields,
+            payer_name=ctx.payer_str,
+            candidates_by_field=ctx.raw_candidates_by_field,
+            ocr_quality=ctx.ocr_quality,
+        )
+    except Exception:
+        logger.warning(
+            "Confidence scoring failed for job %s; forcing review fallback",
+            str(ctx.job_uuid)[:8],
+            exc_info=True,
+        )
+        ctx.scoring_result = ScoringResult(
+            overall_confidence=0.0,
+            review_reasons=["SCORING_FAILURE"],
+        )
     ctx.overall_conf = ctx.scoring_result.overall_confidence
     ctx.job.overall_conf = ctx.overall_conf
 
 
 def determine_review(ctx: PipelineContext) -> None:
     """Step 15: Determine if review is needed."""
+    if ctx.scoring_result is None:
+        ctx.scoring_result = ScoringResult(
+            overall_confidence=0.0,
+            review_reasons=["SCORING_RESULT_MISSING"],
+        )
+
     _match_score = ctx.match_result.score if (ctx.match_result and ctx.match_result.matched) else 0.0
     _candidates_for_review = (
         ctx.raw_candidates_by_field if _match_score < 0.85 else None
@@ -135,3 +162,8 @@ def determine_review(ctx: PipelineContext) -> None:
         payer_name=ctx.payer_str,
         candidates_by_field=_candidates_for_review,
     )
+
+    if ctx.cross_result is not None and not ctx.cross_result.is_consistent:
+        ctx.needs_review = True
+        if "CROSS_FIELD_INCONSISTENCY" not in ctx.scoring_result.review_reasons:
+            ctx.scoring_result.review_reasons.append("CROSS_FIELD_INCONSISTENCY")

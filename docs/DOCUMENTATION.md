@@ -25,7 +25,8 @@
 14. [ML Model Management](#14-ml-model-management)
 15. [Query & Semantic Search](#15-query--semantic-search)
 16. [Monitoring & Analytics](#16-monitoring--analytics)
-17. [Configuration Reference](#17-configuration-reference)
+17. [Operations Console UI](#17-operations-console-ui)
+18. [Configuration Reference](#18-configuration-reference)
 
 ---
 
@@ -47,6 +48,7 @@ This is a **production-grade, HIPAA-compliant, multi-tenant fax processing syste
 
 | Layer | Technology |
 |-------|-----------|
+| **Operations Console** | Vanilla JS + HTML5 + CSS3 (zero-dependency SPA) |
 | **API Framework** | FastAPI 0.109 + Uvicorn 0.27 |
 | **Database** | PostgreSQL 15 + pgvector |
 | **Task Queue** | Celery 5.3 + Redis 7 |
@@ -165,8 +167,9 @@ The system is split into **3 stateless API services** and **1 stateful worker**:
 
 ### Fax Review API (Port 8002)
 
-**Responsibility:** Template management, human review workflow, analytics, model version registry
+**Responsibility:** Template management, human review workflow, analytics, model version registry, Operations Console UI
 
+- **Operations Console** — Browser-based SPA at `/ui` for all system workflows (see [Section 17](#17-operations-console-ui))
 - Full CRUD for templates with versioning (template → version → fields → samples)
 - Review workflow: claim → correct → submit with optimistic locking
 - Analytics dashboards: quality metrics, per-payer stats, feedback summaries
@@ -590,7 +593,73 @@ Each payer defines:
 
 ---
 
-## 17. Configuration Reference
+## 17. Operations Console UI
+
+The system includes a browser-based Operations Console served by the Review API at `http://localhost:8002/ui`.
+
+### Architecture
+
+The console is a zero-dependency single-page application (no build step, no framework):
+
+| File | Size | Purpose |
+|------|------|---------|
+| `services/fax_review_api/ui/index.html` | ~834 lines | HTML structure with WAI-ARIA accessibility attributes |
+| `services/fax_review_api/ui/app.js` | ~1136 lines | Vanilla JavaScript application logic (IIFE pattern) |
+| `services/fax_review_api/ui/styles.css` | ~1116 lines | CSS with custom properties, responsive grid layout |
+
+All files are served as static assets via FastAPI's `StaticFiles` middleware mounted at `/ui` with `html=True`.
+
+### Capabilities
+
+The console provides five operational tabs:
+
+| Tab | Features | API Services Used |
+|-----|----------|-------------------|
+| **Dashboard** | Visual analytics with KPI cards (total jobs, auto-finalize rate, avg confidence), processing volume chart, document type distribution, payer performance comparison, confidence distribution | Review API (8002) |
+| **Workflow** | Fax upload, job listing/filtering, job inspection (status/results/OCR), review queue (unclaimed/pending), review packet workspace with inline corrections | Ingress API (8001), Review API (8002) |
+| **Templates** | Template CRUD, version management with matching thresholds, sample image upload, field ROI definition, test-match, test-extract, suggest-ROI | Review API (8002) |
+| **Intelligence** | Tiered query (structured/semantic/summarizer), analytics reports (quality/payer/feedback/recalibrate), model version management (list/register/promote/metrics/delete) | Query API (8003), Review API (8002) |
+| **API Console** | Raw HTTP request builder targeting any service with custom method, path, query string, and JSON body | Any (configurable) |
+
+### Integration with Backend
+
+The console communicates with all three API services:
+
+- **34 distinct API calls** verified against backend routes
+- All path parameters use `encodeURIComponent()` to prevent path traversal
+- JWT Bearer tokens are automatically attached when configured
+- File uploads use native `FormData` (no Base64 encoding)
+- All HTML output uses XSS-safe `escapeHtml()`/`escapeAttr()` functions
+
+### Connection Profile
+
+Users configure API base URLs (default: `localhost:8001/8002/8003`), JWT token, and reviewer ID in the sidebar. Settings persist in browser `localStorage`.
+
+### Accessibility
+
+The console meets WCAG 2.1 AA requirements:
+- WAI-ARIA Tabs pattern with `role="tablist"`, `role="tab"`, `role="tabpanel"`
+- `aria-live="polite"` regions for activity feed and toast notifications
+- Lightbox image viewer with `role="dialog"` and `aria-modal="true"`
+- `:focus-visible` outlines on all interactive elements
+- `prefers-reduced-motion` media query support
+- `@media print` stylesheet for document printing
+- Dynamic inputs include descriptive `aria-label` attributes
+
+### Design System
+
+CSS custom properties define the color palette, typography, spacing, and border radii:
+
+- **Accent:** `#0f766e` (teal) — primary actions, active tabs, links
+- **Warning:** `#9a6003` — flagged fields, low-confidence indicators (WCAG AA contrast)
+- **Danger:** `#b42318` — errors, delete actions
+- **Success:** `#12804a` — completed status, submit confirmations
+- **Typography:** Sora (sans-serif headings/UI) + IBM Plex Mono (code/data)
+- **Layout:** Two-column CSS Grid (330px sidebar + fluid workspace) with responsive breakpoints at 1200px and 860px
+
+---
+
+## 18. Configuration Reference
 
 ### Settings Hierarchy
 

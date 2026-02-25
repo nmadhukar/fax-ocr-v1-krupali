@@ -353,4 +353,18 @@ def vlm_prescreening(ctx: PipelineContext) -> None:
     """Step 9c: Intelligent VLM pre-screening."""
     from libs.shared.extraction.field_builder import preprocess_vlm_candidates
 
-    ctx.candidates_by_field = preprocess_vlm_candidates(ctx.candidates_by_field)
+    try:
+        updated = preprocess_vlm_candidates(ctx.candidates_by_field or {})
+        if isinstance(updated, dict):
+            ctx.candidates_by_field = updated
+        else:
+            logger.warning(
+                "VLM pre-screening returned non-dict payload for job %s; keeping original candidates",
+                ctx.fax_job_id,
+            )
+    except Exception:
+        logger.warning(
+            "VLM pre-screening failed for job %s; keeping original candidates",
+            ctx.fax_job_id,
+            exc_info=True,
+        )

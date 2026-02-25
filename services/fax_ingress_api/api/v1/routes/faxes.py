@@ -4,7 +4,7 @@ Fax upload and management endpoints.
 
 import hashlib
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 from uuid import UUID
 
@@ -131,14 +131,51 @@ def _build_duplicate_response(existing: FaxJob) -> JSONResponse:
     )
 
 
+def _read_upload_with_limit(
+    upload: UploadFile,
+    max_size_bytes: int,
+    chunk_size: int = 1024 * 1024,
+) -> bytes:
+    """Read uploaded file in bounded chunks to avoid unbounded RAM usage."""
+    chunks: list[bytes] = []
+    total = 0
+
+    while True:
+        chunk = upload.file.read(chunk_size)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_size_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"File too large. Maximum size: {max_size_bytes // (1024 * 1024)}MB",
+            )
+        chunks.append(chunk)
+
+    return b"".join(chunks)
+
+
 def _maybe_requeue_existing(existing: FaxJob) -> None:
     """Re-queue existing job if it is currently pending or previously failed.
 
     Uses a deterministic task_id derived from the fax_job_id to prevent
     duplicate tasks when concurrent uploads hit the same duplicate.
     """
-    if existing.status not in (FaxJobStatusEnum.PENDING, FaxJobStatusEnum.FAILED):
+    stale_processing = (
+        existing.status == FaxJobStatusEnum.PROCESSING
+        and existing.processing_started_at is not None
+        and (datetime.now(timezone.utc) - existing.processing_started_at) > timedelta(minutes=20)
+    )
+    if existing.status not in (FaxJobStatusEnum.PENDING, FaxJobStatusEnum.FAILED) and not stale_processing:
         return
+
+    if stale_processing:
+        logger.warning(
+            "Detected stale PROCESSING job %s (started_at=%s); forcing requeue",
+            existing.fax_job_id,
+            existing.processing_started_at,
+        )
+        existing.status = FaxJobStatusEnum.FAILED
 
     try:
         logger.info(
@@ -199,16 +236,23 @@ def upload_fax(
             detail="Invalid file type. Allowed types: PDF, TIFF, PNG, JPEG",
         )
 
-    # Read file content (sync — FastAPI runs sync endpoints in threadpool)
-    content = file.file.read()
-
     # Validate file size
     max_size = settings.api.max_upload_size_mb * 1024 * 1024
-    if len(content) > max_size:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"File too large. Maximum size: {settings.api.max_upload_size_mb}MB",
-        )
+    content_length_header = request.headers.get("content-length")
+    if content_length_header:
+        try:
+            content_length = int(content_length_header)
+        except ValueError:
+            content_length = 0
+        # Multipart adds overhead; allow a small envelope but reject obvious abuse.
+        if content_length > (max_size + 2 * 1024 * 1024):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"File too large. Maximum size: {settings.api.max_upload_size_mb}MB",
+            )
+
+    # Read file content (sync — FastAPI runs sync endpoints in threadpool)
+    content = _read_upload_with_limit(file, max_size)
 
     # Validate file magic bytes (prevents extension spoofing)
     validate_file_magic(content, content_type)

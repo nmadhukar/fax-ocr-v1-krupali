@@ -20,7 +20,9 @@ from libs.shared.db.base import Base
 # Global engine and session factory (thread-safe initialization)
 _engine: Engine | None = None
 _session_factory: sessionmaker[Session] | None = None
-_init_lock = threading.Lock()
+# Re-entrant lock is required because get_session_factory() calls get_engine()
+# during first-time initialization.
+_init_lock = threading.RLock()
 
 
 def get_engine() -> Engine:

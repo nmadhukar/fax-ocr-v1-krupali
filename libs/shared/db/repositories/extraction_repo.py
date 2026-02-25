@@ -6,6 +6,7 @@ import logging
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,45 @@ class ExtractedFieldRepository(BaseRepository[FaxExtractedField]):
         Returns:
             Created or updated FaxExtractedField.
         """
+        dialect_name = ""
+        try:
+            if self.db.bind is not None and self.db.bind.dialect is not None:
+                dialect_name = self.db.bind.dialect.name
+        except Exception:
+            dialect_name = ""
+
+        if dialect_name == "postgresql":
+            stmt = (
+                pg_insert(FaxExtractedField)
+                .values(
+                    fax_job_id=fax_job_id,
+                    field_key=field_key,
+                    method=method,
+                    field_value=field_value,
+                    field_conf=field_conf,
+                    evidence_bbox=evidence_bbox,
+                    evidence_text=evidence_text,
+                )
+                .on_conflict_do_update(
+                    constraint="uq_extracted_field_job_key_method",
+                    set_={
+                        "field_value": field_value,
+                        "field_conf": field_conf,
+                        "evidence_bbox": evidence_bbox,
+                        "evidence_text": evidence_text,
+                    },
+                )
+                .returning(FaxExtractedField.extracted_field_id)
+            )
+            extracted_field_id = self.db.execute(stmt).scalar_one()
+            self.db.flush()
+            saved = self.get_by_id(extracted_field_id)
+            if saved is None:
+                raise RuntimeError(
+                    f"Upsert returned missing field record for {field_key} ({method})"
+                )
+            return saved
+
         existing = self.get_field(fax_job_id, field_key, method)
 
         if existing:

@@ -103,14 +103,13 @@ class FieldCanonicalizer:
             if len(year) == 2:
                 current_year = datetime.now().year
                 y = int(year)
-                # Standard 80-year forward window: 2-digit years within
-                # 80 years ahead of now stay in current/next century;
-                # older ones go to the previous century.
+                # Balanced 30-year forward window: 2-digit years within
+                # 30 years ahead of now stay in current century;
+                # otherwise go to the previous century.  This correctly
+                # maps '90' → 1990 (DOB) while keeping '25' → 2025.
                 full = (current_year // 100) * 100 + y
-                if full > current_year + 80:
+                if full > current_year + 30:
                     full -= 100
-                elif full < current_year - 20:
-                    full += 100
                 year = str(full)
             try:
                 parsed = datetime(int(year), int(month), int(day))

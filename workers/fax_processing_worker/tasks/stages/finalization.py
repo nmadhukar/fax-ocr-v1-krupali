@@ -17,6 +17,7 @@ from libs.shared.db.models.enums import FaxJobStatusEnum
 from libs.shared.db.models.fax_review import FaxReview
 from libs.shared.db.repositories.extraction_repo import ExtractionRepository
 from libs.shared.extraction.hitl import compute_field_flags
+from libs.shared.scoring.confidence_scorer import ScoringResult
 
 from . import PipelineContext
 
@@ -32,7 +33,7 @@ def store_extraction(ctx: PipelineContext) -> None:
             if ctx.layoutlm_extraction_meta
             else None
         ),
-        "classifier": "stub-v1",
+        "classifier": "keyword-regex-v1",
         "embedder": "all-MiniLM-L6-v2",
         "pipeline": "3.0.0",
     }
@@ -49,6 +50,12 @@ def hitl_flagging(ctx: PipelineContext) -> None:
     """Step 16b: HITL — compute per-field confidence flags."""
     if not ctx.settings.hitl.enabled:
         return
+
+    if ctx.scoring_result is None:
+        ctx.scoring_result = ScoringResult(
+            overall_confidence=float(ctx.overall_conf or 0.0),
+            review_reasons=[],
+        )
 
     ctx.hitl_flags = compute_field_flags(
         ctx.extracted_fields,
@@ -73,7 +80,8 @@ def hitl_flagging(ctx: PipelineContext) -> None:
             and len(ctx.hitl_flags) >= ctx.settings.hitl.min_flags_for_review
         ):
             ctx.needs_review = True
-            ctx.scoring_result.review_reasons.append("HITL_LOW_CONFIDENCE_FIELDS")
+            if ctx.scoring_result is not None:
+                ctx.scoring_result.review_reasons.append("HITL_LOW_CONFIDENCE_FIELDS")
             logger.info(
                 "HITL: overriding to NEEDS_REVIEW (%d flag(s)) [job=%s]",
                 len(ctx.hitl_flags),
@@ -113,6 +121,12 @@ def store_job_metadata(ctx: PipelineContext) -> None:
 
 def create_review_or_finalize(ctx: PipelineContext) -> None:
     """Steps 16-17: Create review task or finalize job."""
+    _review_reasons = (
+        ctx.scoring_result.review_reasons[:8]
+        if ctx.scoring_result is not None
+        else []
+    )
+
     if ctx.needs_review:
         ctx.job.status = FaxJobStatusEnum.NEEDS_REVIEW
         ctx.job.needs_review = True
@@ -139,27 +153,57 @@ def create_review_or_finalize(ctx: PipelineContext) -> None:
         review = FaxReview(
             fax_job_id=ctx.job_uuid,
             review_packet=review_packet,
-            review_reasons=ctx.scoring_result.review_reasons[:8],
+            review_reasons=_review_reasons,
         )
         ctx.review_repo.create(review)
 
-        task_client = TaskClient()
-        task_client.create_review_task(
-            fax_job_id=str(ctx.job_uuid),
-            reason_codes=ctx.scoring_result.review_reasons[:8],
-        )
+        # Commit DB state BEFORE external API calls so that if the
+        # external call fails the local DB is still consistent.
+        ctx.job.processing_completed_at = datetime.now(timezone.utc)
+        ctx.db.commit()
+
+        try:
+            task_client = TaskClient(db=ctx.db, tenant_id=ctx.tenant_id)
+            task_client.create_review_task(
+                fax_job_id=str(ctx.job_uuid),
+                reason_codes=_review_reasons,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to create external review task for job %s; "
+                "local review record was persisted successfully",
+                ctx.job_uuid, exc_info=True,
+            )
     else:
         ctx.job.status = FaxJobStatusEnum.COMPLETED
         ctx.job.needs_review = False
 
-        prior_auth_client = PriorAuthClient()
-        prior_auth_client.attach_extraction(
-            case_id=ctx.job.external_fax_id or str(ctx.job_uuid),
-            extraction_json=ctx.extracted_fields,
-        )
+        # Commit DB state BEFORE external API calls.
+        ctx.job.processing_completed_at = datetime.now(timezone.utc)
+        ctx.db.commit()
 
-    ctx.job.processing_completed_at = datetime.now(timezone.utc)
-    # NOTE: commit deferred to finalize_metrics() to keep status + metrics atomic
+        try:
+            prior_auth_client = PriorAuthClient(db=ctx.db, tenant_id=ctx.tenant_id)
+            if not ctx.job.external_fax_id:
+                case = prior_auth_client.create_case(
+                    patient_name=(ctx.extracted_fields.get("patient_name") or {}).get("value"),
+                    member_id=(ctx.extracted_fields.get("member_id") or {}).get("value"),
+                    payer=ctx.detected_payer.value if ctx.detected_payer else None,
+                    fax_job_id=str(ctx.job_uuid),
+                )
+                ctx.job.external_fax_id = case["case_id"]
+                ctx.db.commit()  # persist external_fax_id
+            prior_auth_client.attach_extraction(
+                case_id=ctx.job.external_fax_id or str(ctx.job_uuid),
+                extraction_json=ctx.extracted_fields,
+                fax_job_id=str(ctx.job_uuid),
+            )
+        except Exception:
+            logger.warning(
+                "Failed to attach extraction to external system for job %s; "
+                "local extraction was persisted successfully",
+                ctx.job_uuid, exc_info=True,
+            )
 
 
 def finalize_metrics(ctx: PipelineContext) -> None:
