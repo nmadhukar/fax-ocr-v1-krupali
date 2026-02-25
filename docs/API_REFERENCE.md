@@ -40,7 +40,7 @@ The JWT payload contains:
 
 ### Development Mode
 
-When `ENVIRONMENT=development`, tenant isolation checks are relaxed. The system still requires a valid JWT but won't enforce tenant boundary restrictions.
+When `ENVIRONMENT=development`, a synthetic bypass user with `reviewer` role (not admin) is used when no token is provided. **Tenant isolation is always enforced** regardless of environment — the dev bypass does not skip tenant boundary checks.
 
 ---
 
@@ -896,7 +896,7 @@ POST /v1/query
       "similarity_score": null
     }
   ],
-  "total_results": 1,
+  "result_count": 1,
   "latency_ms": 12.5
 }
 ```
@@ -965,7 +965,9 @@ Every data-access endpoint writes an audit record:
 
 **FaxJobStatusEnum:** `PENDING`, `PROCESSING`, `COMPLETED`, `FAILED`, `NEEDS_REVIEW`
 
-**ExtractionMethodEnum:** `TEMPLATE_OCR`, `OCR_LABEL`, `LAYOUTLM`, `VLM`, `HUMAN_REVIEW`, `HYBRID`, `LLM`
+**ExtractionMethodEnum:** `TEMPLATE_OCR`, `OCR_LABEL`, `LAYOUTLM`, `VLM`, `HUMAN_REVIEW`, `HYBRID`, `LLM`, `DONUT`, `HUMAN`, `SYSTEM`
+
+`SYSTEM` is used for metadata-sourced fields (`payer_name`, `fax_received_date`) that come from job metadata rather than OCR extraction.
 
 ### Client-Facing Field Format
 

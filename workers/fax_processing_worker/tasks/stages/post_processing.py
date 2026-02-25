@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from libs.shared.db.models.enums import ExtractionMethodEnum
@@ -41,6 +41,46 @@ def _is_valid_date_token(token: str) -> bool:
         except ValueError:
             continue
     return False
+
+
+def _parse_date_token(token: str) -> datetime | None:
+    """Parse a date token using supported formats."""
+    if not token:
+        return None
+    normalized = re.sub(r"[-.]", "/", token.strip())
+    for fmt in _DATE_PARSE_FORMATS:
+        for candidate in (normalized, token.strip()):
+            try:
+                return datetime.strptime(candidate, fmt)
+            except ValueError:
+                continue
+    return None
+
+
+def _coerce_noisy_date_token(token: str) -> str | None:
+    """Best-effort cleanup for noisy OCR date tokens."""
+    if not token:
+        return None
+    raw = token.strip().strip(".,;:")
+    if _is_valid_date_token(raw):
+        return raw
+
+    raw_norm = re.sub(r"[-.]", "/", raw)
+    if _is_valid_date_token(raw_norm):
+        return raw_norm
+
+    if "/" in raw_norm:
+        left, _, year = raw_norm.rpartition("/")
+        year_digits = re.sub(r"\D", "", year)
+        left_digits = re.sub(r"\D", "", left)
+        if len(year_digits) == 4 and len(left_digits) >= 3:
+            month = left_digits[:2] if len(left_digits) >= 4 else left_digits[:1]
+            day = left_digits[-2:]
+            candidate = f"{int(month):02d}/{int(day):02d}/{year_digits}"
+            if _is_valid_date_token(candidate):
+                return candidate
+
+    return None
 
 
 def _extract_date_tokens(value: str) -> list[str]:
@@ -95,6 +135,8 @@ def _normalize_date_fields(fields: dict[str, dict[str, Any]]) -> None:
 _APPROVAL_RE = (
     re.compile(r"\bauth(?:orization)?\s+status\s*[:\s]*approv", re.IGNORECASE),
     re.compile(r"\bapproval\s+notification\b", re.IGNORECASE),
+    re.compile(r"\bapproved\s+authorization\b", re.IGNORECASE),
+    re.compile(r"\bauto\s+approval\b", re.IGNORECASE),
     re.compile(r"\bnurse\s+recommendation\s*[:\s]*approv", re.IGNORECASE),
     re.compile(r"\b(?:has\s+been|is)\s+approved\b", re.IGNORECASE),
     re.compile(r"\bdecision\s*[:\s]*approv", re.IGNORECASE),
@@ -106,6 +148,7 @@ _DENIAL_RE = (
     re.compile(r"\bdecision\s*[:\s]*deni", re.IGNORECASE),
     re.compile(r"\badverse\s+(?:determination|decision)\b", re.IGNORECASE),
     re.compile(r"\bnot\s+(?:medically\s+)?necessary\b", re.IGNORECASE),
+    re.compile(r"\bwill\s+not\s+approve\b", re.IGNORECASE),
 )
 
 
@@ -133,6 +176,15 @@ def _infer_decision_from_ocr(scan_ocr: str) -> str | None:
     if approval_hits > denial_hits and approval_hits > 0:
         return "APPROVED"
     if denial_hits > approval_hits and denial_hits > 0:
+        return "DENIED"
+
+    # Weak fallback when explicit label patterns are absent.
+    approval_kw = len(re.findall(r"\bapprov(?:ed|al|e)?\b", text, flags=re.IGNORECASE))
+    denial_kw = len(re.findall(r"\bdeni(?:ed|al|es)?\b", text, flags=re.IGNORECASE))
+    denial_kw += len(re.findall(r"\bnot\s+approve\b", text, flags=re.IGNORECASE))
+    if approval_kw >= 2 and denial_kw == 0:
+        return "APPROVED"
+    if denial_kw >= 2 and approval_kw == 0:
         return "DENIED"
     return None
 
@@ -212,9 +264,48 @@ def _looks_like_provider_prose(value: str) -> bool:
     return any(marker in text for marker in prose_markers)
 
 
+def _normalize_provider_name_value(value: str) -> str:
+    """Trim common OCR bleed from provider/facility names."""
+    candidate = re.sub(r"\s+", " ", (value or "")).strip(" ,.;:-")
+    if not candidate:
+        return candidate
+
+    stop_re = re.compile(
+        r"(?:memberd[0o]b|member\s*(?:name|id|d[0o]b|date\s+of\s+birth)|"
+        r"reference\s+number|requesting\s+provider(?:\s+name)?|"
+        r"servicing\s+provider(?:\s+name)?|authorization\s+status|"
+        r"auth\s+status|date\s+span|decision)",
+        re.IGNORECASE,
+    )
+    stop_m = stop_re.search(candidate)
+    if stop_m:
+        candidate = candidate[: stop_m.start()].strip(" ,.;:-")
+
+    tokens = candidate.split()
+    if not tokens:
+        return candidate
+
+    suffixes = {"llc", "inc", "corp", "corporation", "ltd", "pllc", "pc", "llp"}
+    for idx, token in enumerate(tokens):
+        norm = re.sub(r"[^a-z]", "", token.lower())
+        if norm in suffixes:
+            tokens = tokens[: idx + 1]
+            break
+
+    org_markers = {"service", "services", "health", "clinical", "clinic", "hospital", "center", "care", "group"}
+    if len(tokens) >= 6 and any(re.sub(r"[^a-z]", "", t.lower()) in org_markers for t in tokens):
+        last_two = tokens[-2:]
+        if all(re.match(r"^[A-Za-z][A-Za-z'.-]{1,}$", t or "") for t in last_two):
+            tail_norm = [re.sub(r"[^a-z]", "", t.lower()) for t in last_two]
+            if not any(t in suffixes for t in tail_norm):
+                tokens = tokens[:-2]
+
+    return " ".join(tokens).strip(" ,.;:-")
+
+
 def _is_reasonable_provider_name(value: str) -> bool:
     """Basic provider/facility name quality gate."""
-    candidate = (value or "").strip().strip(",.;:-")
+    candidate = _normalize_provider_name_value(value)
     if len(candidate) < 3:
         return False
     if not any(c.isalpha() for c in candidate):
@@ -241,6 +332,56 @@ def _is_reasonable_provider_name(value: str) -> bool:
     ):
         return False
     return True
+
+
+def _is_reasonable_patient_name(value: str) -> bool:
+    """Basic sanity checks for patient/member names."""
+    candidate = re.sub(r"\s+", " ", (value or "")).strip(" ,.;:-")
+    if len(candidate) < 3:
+        return False
+    if not any(c.isalpha() for c in candidate):
+        return False
+    compact = re.sub(r"[^A-Za-z0-9]", "", candidate)
+    if compact:
+        digit_ratio = sum(1 for c in compact if c.isdigit()) / len(compact)
+        if digit_ratio > 0.12:
+            return False
+    words = [w for w in re.split(r"\s+", candidate) if w]
+    if len(words) > 6:
+        return False
+    lower = candidate.lower()
+    bad_markers = (
+        "alcohol",
+        "treatment",
+        "authorization",
+        "approved services",
+        "decision",
+        "appeal",
+        "provider",
+        "reference",
+        "date span",
+        "member id",
+        "dob",
+    )
+    if any(marker in lower for marker in bad_markers):
+        return False
+    return True
+
+
+def _clean_patient_name_candidate(raw: str) -> str:
+    """Remove non-name tails from OCR-captured patient name text."""
+    candidate = re.sub(r"\s+", " ", (raw or "")).strip(" ,.;:-")
+    stop_re = re.compile(
+        r"(?:memberd[0o]b|member\s*(?:id|d[0o]b)|date\s+of\s+birth|"
+        r"requesting\s+provider|servicing\s+provider|provider\s+name|"
+        r"auth(?:orization)?\s*status|reference|next\s+review|approved\s+services)",
+        re.IGNORECASE,
+    )
+    stop_m = stop_re.search(candidate)
+    if stop_m:
+        candidate = candidate[: stop_m.start()].strip(" ,.;:-")
+    candidate = re.sub(r"\s*,\s*", ", ", candidate)
+    return candidate.strip(" ,.;:-")
 
 
 def merge_fields(ctx: PipelineContext) -> None:
@@ -432,6 +573,15 @@ def smart_corrections(ctx: PipelineContext) -> None:
     _pan_data = fields.get("prior_auth_number")
     if _prvn_data:
         _prvn_val_raw = (_prvn_data.get("value") or "").strip()
+        _prvn_norm = _normalize_provider_name_value(_prvn_val_raw)
+        if _prvn_norm and _prvn_norm != _prvn_val_raw:
+            logger.info(
+                "Normalized provider_name from '%s' to '%s'",
+                _prvn_val_raw[:80],
+                _prvn_norm[:80],
+            )
+            _prvn_data["value"] = _prvn_norm
+            _prvn_val_raw = _prvn_norm
         _prvn_val_raw_lower = _prvn_val_raw.lower()
         _provider_label_like = (
             _prvn_val_raw.endswith(":")
@@ -488,6 +638,7 @@ def ocr_scanners(ctx: PipelineContext) -> None:
     scan_ocr = ctx.full_doc_ocr_text or ctx.all_ocr_text or ""
 
     _date_span_scanner(fields, scan_ocr)
+    _approval_date_window_scanner(fields, scan_ocr, ctx)
     _service_code_scanner(fields, scan_ocr, ctx.raw_ocr_tokens)
     _auth_date_range_recovery(fields, scan_ocr)
     _service_dates_scanner(fields, scan_ocr)
@@ -578,6 +729,102 @@ def _date_span_scanner(fields: dict, scan_ocr: str) -> None:
             "candidates": [],
         }
         logger.info("Date span scanner set auth_expiration_date=%s", end_date)
+
+
+def _approval_date_window_scanner(fields: dict, scan_ocr: str, ctx: PipelineContext) -> None:
+    """Fallback scanner for approval-style date ranges when labels drift."""
+    eff_val = (fields.get("auth_effective_date") or {}).get("value") or ""
+    exp_val = (fields.get("auth_expiration_date") or {}).get("value") or ""
+    if _extract_date_tokens(eff_val) and _extract_date_tokens(exp_val):
+        return
+
+    text = scan_ocr or ""
+    if not text:
+        return
+
+    doc_type = getattr(getattr(ctx, "job", None), "doc_type", None)
+    doc_type_value = getattr(doc_type, "value", str(doc_type or ""))
+    if doc_type_value not in ("PRIOR_AUTH_APPROVAL", "UNKNOWN", ""):
+        return
+
+    range_re = re.compile(
+        r"(\d{1,2}[/-]\d{1,3}[/-]\d{2,4})\s*(?:to|through|thru|[-–—]{1,2})\s*([0-9/\-]{6,12})",
+        re.IGNORECASE,
+    )
+
+    best: tuple[int, int, str, str | None] | None = None
+    for m in range_re.finditer(text):
+        d1 = _coerce_noisy_date_token(m.group(1))
+        d2 = _coerce_noisy_date_token(m.group(2))
+        if not d1:
+            continue
+        window = text[max(0, m.start() - 90): min(len(text), m.end() + 90)].lower()
+        score = 0
+        for kw in ("date span", "service date", "authorization date", "first", "approved", "authorization"):
+            if kw in window:
+                score += 1
+        for bad in ("appeal", "calendar days", "state hearing", "adverse decision"):
+            if bad in window:
+                score -= 2
+        rank = (score, -m.start())
+        if best is None or rank > (best[0], best[1]):
+            best = (score, -m.start(), d1, d2)
+
+    if not best:
+        return
+
+    start_raw = best[2]
+    end_raw = best[3]
+    start_dt = _parse_date_token(start_raw)
+    end_dt = _parse_date_token(end_raw) if end_raw else None
+
+    if start_dt and end_dt and start_dt > end_dt:
+        start_dt, end_dt = end_dt, start_dt
+
+    # Additional fallback observed in approval letters:
+    # "First 30 days 08/07/2025-09705/2025; Day 31 forward ... 09/06/2025"
+    if start_dt and end_dt is None:
+        day_after_m = re.search(
+            r"day\s*\d+\s*[^0-9]{0,30}(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})",
+            text,
+            re.IGNORECASE,
+        )
+        if day_after_m:
+            maybe_after = _coerce_noisy_date_token(day_after_m.group(1))
+            maybe_after_dt = _parse_date_token(maybe_after) if maybe_after else None
+            if maybe_after_dt and maybe_after_dt >= start_dt:
+                end_dt = maybe_after_dt - timedelta(days=1)
+
+    if not start_dt:
+        return
+
+    if not _extract_date_tokens(eff_val):
+        fields["auth_effective_date"] = {
+            "value": start_dt.strftime("%m/%d/%Y"),
+            "confidence": 0.68,
+            "method": ExtractionMethodEnum.TEMPLATE_OCR.value,
+            "evidence_bbox": None,
+            "evidence_text": "OCR approval date-range fallback",
+            "candidates": [],
+        }
+        logger.info(
+            "Approval range scanner set auth_effective_date=%s",
+            fields["auth_effective_date"]["value"],
+        )
+
+    if end_dt and not _extract_date_tokens(exp_val):
+        fields["auth_expiration_date"] = {
+            "value": end_dt.strftime("%m/%d/%Y"),
+            "confidence": 0.68,
+            "method": ExtractionMethodEnum.TEMPLATE_OCR.value,
+            "evidence_bbox": None,
+            "evidence_text": "OCR approval date-range fallback",
+            "candidates": [],
+        }
+        logger.info(
+            "Approval range scanner set auth_expiration_date=%s",
+            fields["auth_expiration_date"]["value"],
+        )
 
 
 def _auth_date_range_recovery(fields: dict, scan_ocr: str) -> None:
@@ -724,8 +971,15 @@ def _provider_name_recovery(fields: dict, scan_ocr: str) -> None:
 
     line_patterns = (
         re.compile(
-            r"^(?:servicing|requesting|ordering|attending|referring|rendering|treating)?\s*"
-            r"provider(?:\s+name)?\s*[:\-]\s*(.+)$",
+            r"\bservicing\s+provider(?:\s+name)?\s*[:.\-]?\s*(.+)$",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\brequesting\s+provider(?:\s+name)?\s*[:.\-]?\s*(.+?)(?:\bservicing\s+provider\b|$)",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\b(?:ordering|attending|referring|rendering|treating)?\s*provider(?:\s+name)?\s*[:.\-]\s*(.+)$",
             re.IGNORECASE,
         ),
         re.compile(r"^facility\s+name\s*[:\-]\s*(.+)$", re.IGNORECASE),
@@ -761,7 +1015,7 @@ def _provider_name_recovery(fields: dict, scan_ocr: str) -> None:
     )
 
     def _clean_provider_candidate(raw: str) -> str:
-        candidate = re.sub(r"\s+", " ", (raw or "")).strip(" ,.;:-")
+        candidate = _normalize_provider_name_value(raw)
         candidate = re.sub(r"^(?:and/or\s+)?(?:request|service)\s+provider\s*:?\s*", "", candidate, flags=re.IGNORECASE)
         words = candidate.split()
         if len(words) >= 8 and len(words) % 2 == 0:
@@ -776,7 +1030,7 @@ def _provider_name_recovery(fields: dict, scan_ocr: str) -> None:
     for idx, line in enumerate(lines):
         candidate = ""
         for pat in line_patterns:
-            m = pat.match(line)
+            m = pat.search(line)
             if m:
                 candidate = m.group(1).strip()
                 break
@@ -816,41 +1070,67 @@ def _provider_name_recovery(fields: dict, scan_ocr: str) -> None:
 
 def _patient_name_recovery(fields: dict, scan_ocr: str, ctx: PipelineContext) -> None:
     """Patient name recovery from candidates and OCR scan."""
-    if (fields.get("patient_name") or {}).get("value"):
+    existing = fields.get("patient_name") or {}
+    existing_value = (existing.get("value") or "").strip()
+    if existing_value and _is_reasonable_patient_name(existing_value):
         return
 
-    # Try candidates from previously cleared patient_name
     _prvn_val_now = ((fields.get("provider_name") or {}).get("value") or "").lower()
     _prvn_words_now = set(re.sub(r"[^a-z]", " ", _prvn_val_now).split())
 
-    # Note: in the original, _pn_data and _pn_data2 were old variables.
-    # In the refactored version we no longer have them; the candidates are gone after
-    # smart_corrections above. This scanner focuses on the OCR-based recovery.
+    fallback_candidates = list(existing.get("candidates") or [])
+    if existing_value:
+        logger.info(
+            "patient_name '%s' looked implausible; attempting recovery",
+            existing_value[:80],
+        )
+        fields.pop("patient_name", None)
 
-    # Member Name scan from OCR text (Molina)
-    mn_label_re = re.compile(r"Member\s+Name\s*:?\s*(.+)", re.IGNORECASE)
-    for mn_line in scan_ocr.split("\n"):
-        mn_m = mn_label_re.match(mn_line.strip())
-        if mn_m:
-            mn_val = mn_m.group(1).strip()
-            mn_val = re.sub(
-                r"\s+(?:Requesting|Servicing|Ordering|Attending|Referring|Primary)\s+Provider.*$",
-                "", mn_val, flags=re.IGNORECASE,
-            ).strip()
-            # Drop trailing long numeric IDs but preserve ordinal suffixes (e.g., "John 3rd").
-            mn_val = re.sub(r"\s+\d{4,}.*$", "", mn_val).strip()
-            mn_val = mn_val.strip(",").strip()
-            if len(mn_val) >= 3 and any(c.isalpha() for c in mn_val):
-                logger.info("Member Name OCR scan found patient_name (len=%d)", len(mn_val))
-                fields["patient_name"] = {
-                    "value": mn_val,
-                    "confidence": 0.60,
-                    "method": ExtractionMethodEnum.TEMPLATE_OCR.value,
-                    "evidence_bbox": None,
-                    "evidence_text": f"OCR: {mn_line.strip()}",
-                    "candidates": [],
-                }
-                break
+    # First, try existing alternate candidates if they look name-like.
+    for cand in fallback_candidates:
+        cand_val = _clean_patient_name_candidate((cand.get("value") or "").strip())
+        if not _is_reasonable_patient_name(cand_val):
+            continue
+        cand_words = set(re.sub(r"[^a-z]", " ", cand_val.lower()).split())
+        if _prvn_words_now and cand_words and cand_words.issubset(_prvn_words_now):
+            continue
+        fields["patient_name"] = {
+            "value": cand_val,
+            "confidence": max(0.62, float(cand.get("confidence") or 0.0)),
+            "method": cand.get("method", ExtractionMethodEnum.TEMPLATE_OCR.value),
+            "evidence_bbox": cand.get("evidence_bbox"),
+            "evidence_text": cand.get("evidence_text", f"OCR candidate: {cand_val}"),
+            "candidates": [],
+        }
+        logger.info("Recovered patient_name from fallback candidate '%s'", cand_val[:80])
+        return
+
+    # Member/Patient Name scan from OCR text.
+    name_label_re = re.compile(
+        r"\b(?:member|patient)\s*name\s*[:;,\-]?\s*([^\n]+)",
+        re.IGNORECASE,
+    )
+    lines = [ln.strip() for ln in (scan_ocr or "").splitlines() if ln.strip()]
+    for line in lines:
+        for match in name_label_re.finditer(line):
+            name_val = _clean_patient_name_candidate(match.group(1))
+            # Drop long trailing numeric IDs but preserve ordinal suffixes.
+            name_val = re.sub(r"\s+\d{4,}.*$", "", name_val).strip(" ,.;:-")
+            if not _is_reasonable_patient_name(name_val):
+                continue
+            name_words = set(re.sub(r"[^a-z]", " ", name_val.lower()).split())
+            if _prvn_words_now and name_words and name_words.issubset(_prvn_words_now):
+                continue
+            logger.info("OCR scan recovered patient_name='%s'", name_val[:80])
+            fields["patient_name"] = {
+                "value": name_val,
+                "confidence": 0.64,
+                "method": ExtractionMethodEnum.TEMPLATE_OCR.value,
+                "evidence_bbox": None,
+                "evidence_text": f"OCR: {line[:160]}",
+                "candidates": [],
+            }
+            return
 
 
 def _following_member_scan(fields: dict, scan_ocr: str) -> None:

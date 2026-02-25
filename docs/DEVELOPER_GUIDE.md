@@ -95,10 +95,13 @@ docker-compose -f infra/docker-compose.yml up -d
 # Copy the example environment file
 cp .env.example .env
 
-# Edit .env — at minimum, verify:
+# Edit .env — at minimum, set these (all required, no defaults):
 #   DATABASE_URL=postgresql+psycopg2://faxadmin:faxpass123@localhost:5432/fax_processor
 #   REDIS_URL=redis://:changeme@localhost:6379/0
 #   MINIO_ENDPOINT=localhost:9000
+#   MINIO_ACCESS_KEY=your-access-key
+#   MINIO_SECRET_KEY=your-secret-key
+#   SECRET_KEY=your-32-char-secret
 ```
 
 ### Step 5: Run Database Migrations
@@ -166,6 +169,7 @@ fax_ocr_v1_krupali/
 │   │   ├── models/                 #     SQLAlchemy ORM models (one file per table)
 │   │   └── repositories/          #     Data access layer (CRUD + custom queries)
 │   ├── extraction/                 #   Field extraction pipeline
+│   │   ├── constants.py            #     Canonical CRITICAL_FIELDS frozenset (9 fields)
 │   │   ├── template_extractor.py   #     PRIMARY: ROI-based extraction
 │   │   ├── ocr_label_extractor.py  #     FALLBACK: regex on OCR text
 │   │   ├── layoutlm_extractor.py   #     GAP-FILL: LayoutLM Document QA
@@ -386,7 +390,7 @@ Add field ROI definition to relevant template versions via the API or `seed_temp
 
 ### Step 2: Add Label Alias (for OCR Label Extractor)
 
-Edit `libs/shared/extraction/ocr_label_extractor.py` — add to `LABEL_ALIASES`:
+Edit `libs/shared/extraction/ocr_label_extractor.py` — add to `LABEL_ALIASES` (currently 16 fields):
 ```python
 LABEL_ALIASES = {
     "your_new_field": [
@@ -394,9 +398,22 @@ LABEL_ALIASES = {
         "Field Label",
         "YFL:",
     ],
-    # ... existing fields
+    # ... existing 16 fields:
+    # member_id, prior_auth_number, patient_name, patient_dob,
+    # provider_name, provider_npi, provider_phone, provider_fax,
+    # auth_effective_date, auth_expiration_date, service_code,
+    # diagnosis_codes, units_requested, next_review_date,
+    # insurance_rep_name, insurance_rep_phone
 }
 ```
+
+If the field is phone-type, also add it to the phone filter in the same file (search for `"provider_phone", "provider_fax", "insurance_rep_phone"`) and to the phone detection in `workers/fax_processing_worker/tasks/stages/validation.py`.
+
+If the field should have a max character length, add it to `_MAX_LENGTHS` dict in the same file.
+
+### Step 2b: Add Metadata-Sourced Field (Alternative)
+
+If the field value comes from job metadata (not OCR), add it to `libs/shared/extraction/output_formatter.py` → `format_summary()`. The function accepts optional keyword args for metadata fields (currently `payer_name` and `fax_received_date`) and injects them with `source: "SYSTEM"` and `confidence: 1.0`. Then pass the value from the API route.
 
 ### Step 3: Add Validation (Optional)
 
@@ -408,13 +425,7 @@ If the field participates in cross-field constraints, update `cross_field_valida
 
 ### Step 5: Update HITL Thresholds (Optional)
 
-Edit `libs/shared/extraction/hitl.py` — add to `FIELD_REVIEW_THRESHOLDS`:
-```python
-FIELD_REVIEW_THRESHOLDS = {
-    "your_new_field": {"threshold": 0.80, "is_critical": False},
-    # ... existing fields
-}
-```
+Non-critical fields automatically use the default threshold (0.75). Only add to `libs/shared/extraction/constants.py` → `CRITICAL_FIELDS` if the field has direct patient-safety or billing impact (this raises its threshold to 0.85 and gives it 2x weight in scoring).
 
 ### Step 6: Add Payer-Specific Rules
 
@@ -690,7 +701,7 @@ See `tests/conftest.py` for shared fixtures:
 
 ### Location
 
-SQL migration files: `infra/migrations/001_initial_schema.sql` through `010_add_dedup_constraint.sql`
+SQL migration files: `infra/migrations/001_initial_schema.sql` through `014_bigint_pk_columns.sql`
 
 ### Creating a New Migration
 
@@ -750,7 +761,7 @@ docker compose logs -f fax-review    # Review API logs
 
 ### Accessing MinIO Console
 
-Open http://localhost:9001 — login with `minioadmin` / `minioadmin123`
+Open http://localhost:9001 — login with the credentials configured via `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` in your env file (**required** — no defaults)
 
 ### Memory Requirements
 

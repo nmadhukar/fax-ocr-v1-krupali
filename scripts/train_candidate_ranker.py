@@ -14,16 +14,24 @@ import logging
 import os
 import sys
 from pathlib import Path
+from datetime import datetime, timezone
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-os.environ.setdefault(
-    "DATABASE_URL",
-    "postgresql+psycopg2://faxadmin:faxpass123@127.0.0.1:5432/fax_processor",
-)
+# H3-FIX: Fail fast if credentials are not set — never use hardcoded defaults.
+_REQUIRED_ENV = ["DATABASE_URL"]
+_missing = [v for v in _REQUIRED_ENV if not os.environ.get(v)]
+if _missing:
+    print(
+        f"ERROR: Required environment variables not set: {', '.join(_missing)}\n"
+        f"Set them before running this script, e.g.:\n"
+        f"  DATABASE_URL=postgresql+psycopg2://user:pass@host/db python {sys.argv[0]}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 os.environ.setdefault("ENVIRONMENT", "development")
-os.environ.setdefault("SECRET_KEY", "dev-secret-key")
+os.environ.setdefault("SECRET_KEY", os.environ.get("SECRET_KEY", "dev-only"))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("train_candidate_ranker")
@@ -31,6 +39,10 @@ logger = logging.getLogger("train_candidate_ranker")
 
 def _safe_bias(wins: int, total: int) -> float:
     # Laplace smoothing + bounded linear map into [-0.18, 0.18].
+    # M6-NOTE: This ±0.18 range produces a 0.36 total swing which can
+    # dominate FieldBuilder's agreement_bonus (0.15) and conflict_penalty
+    # (0.05).  This is intentional for well-trained models (min_samples=10)
+    # but operators should monitor via metrics_exact_match.json.
     rate = (wins + 1.0) / (total + 2.0)
     return max(-0.18, min(0.18, (rate - 0.5) * 0.72))
 
@@ -47,6 +59,12 @@ def main() -> int:
         type=int,
         default=10,
         help="Minimum samples per method/field for field-specific bias",
+    )
+    parser.add_argument(
+        "--lookback-days",
+        type=int,
+        default=90,
+        help="Only use corrections from the last N days (default: 90)",
     )
     args = parser.parse_args()
 
@@ -75,9 +93,12 @@ def main() -> int:
                  AND ef.field_key = f.field_key
                 WHERE f.corrected_value IS NOT NULL
                   AND f.feedback_type = 'correction'
+                  AND f.created_at >= NOW() - make_interval(days => :lookback_days)
                 GROUP BY f.field_key, ef.method
                 """
             )
+            ),
+            {"lookback_days": args.lookback_days},
         ).fetchall()
 
         method_totals: dict[str, list[int]] = {}
@@ -113,7 +134,7 @@ def main() -> int:
 
         model = {
             "version": "candidate-ranker-v1",
-            "trained_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+            "trained_at": datetime.now(timezone.utc).isoformat(),
             "sample_count": sum(v[1] for v in method_totals.values()),
             "global": {"method_bias": global_bias},
             "fields": field_bias,
@@ -121,7 +142,19 @@ def main() -> int:
 
         output_path = Path(args.output)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps(model, indent=2), encoding="utf-8")
+        # Atomic write: write to temp file then rename to avoid partial reads
+        import tempfile
+
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=str(output_path.parent), suffix=".tmp"
+        )
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                json.dump(model, f, indent=2)
+            Path(tmp_path).replace(output_path)
+        except BaseException:
+            Path(tmp_path).unlink(missing_ok=True)
+            raise
         logger.info("Saved ranker model to %s", output_path)
 
         metrics_rows = db.execute(
@@ -171,7 +204,16 @@ def main() -> int:
             )
 
         metrics_path = output_path.parent / "metrics_exact_match.json"
-        metrics_path.write_text(json.dumps(metrics_payload, indent=2), encoding="utf-8")
+        tmp_fd2, tmp_path2 = tempfile.mkstemp(
+            dir=str(metrics_path.parent), suffix=".tmp"
+        )
+        try:
+            with os.fdopen(tmp_fd2, "w", encoding="utf-8") as f:
+                json.dump(metrics_payload, f, indent=2)
+            Path(tmp_path2).replace(metrics_path)
+        except BaseException:
+            Path(tmp_path2).unlink(missing_ok=True)
+            raise
         logger.info("Saved exact-match metrics to %s", metrics_path)
 
     return 0

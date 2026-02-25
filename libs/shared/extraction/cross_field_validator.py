@@ -153,7 +153,7 @@ class CrossFieldValidator:
             return
 
         dob = self._parse_date(dob_str)
-        if dob and dob >= date.today():
+        if dob and dob > date.today():
             result.errors.append(
                 f"Patient date of birth ({dob_str}) is not in the past"
             )
@@ -187,7 +187,7 @@ class CrossFieldValidator:
         result: CrossFieldResult,
     ) -> None:
         """Procedure codes should match CPT (5 digits) or HCPCS (letter+4 digits) format."""
-        codes_str = self._get_value(fields, "procedure_codes")
+        codes_str = self._get_value(fields, "service_code")
         if not codes_str:
             return
 

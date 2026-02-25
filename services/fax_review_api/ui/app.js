@@ -644,6 +644,10 @@
       e.preventDefault();
       await withButtonBusy(e.submitter, "Creating...", async () => {
         const vid = $("fieldVersionId").value.trim();
+        const anchorAliases = $("fieldAnchorAliases").value
+          .split(",")
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0);
         const payload = {
           field_key: $("fieldKey").value.trim(), field_label: $("fieldLabel").value.trim() || null,
           is_required: $("fieldRequired").checked,
@@ -652,6 +656,9 @@
           target_page: Number($("fieldTargetPage").value || 1),
           validation_regex: $("fieldRegex").value.trim() || null,
           expected_type: $("fieldExpectedType").value.trim() || "text",
+          anchor_aliases: anchorAliases,
+          anchor_direction: $("fieldAnchorDirection").value || "right",
+          anchor_max_tokens: Number($("fieldAnchorMaxTokens").value || 4),
         };
         const r = await apiRequest("review", `/v1/templates/versions/${encId(vid)}/fields`, { method: "POST", body: payload });
         renderJson($("fieldOpsOutput"), r.data);
@@ -735,6 +742,7 @@
           if (!payer) throw new Error("Payer name required.");
           r = await apiRequest("review", `/v1/analytics/payer/${encodeURIComponent(payer)}`, { method: "GET", query: { days } });
         } else if (report === "feedback") r = await apiRequest("review", "/v1/analytics/feedback-summary", { method: "GET", query: { days } });
+        else if (report === "template_drift") r = await apiRequest("review", "/v1/analytics/template-drift", { method: "GET", query: { days } });
         else r = await apiRequest("review", "/v1/analytics/recalibrate", { method: "POST", query: { days } });
         renderJson($("analyticsOutput"), r.data);
       }, $("analyticsOutput"));
@@ -918,15 +926,26 @@
   }
 
   function renderTemplateFieldsTable(fields) {
-    $("fieldsBody").innerHTML = fields.map((f) => `
+    $("fieldsBody").innerHTML = fields.map((f) => {
+      const aliases = Array.isArray(f.anchor_aliases)
+        ? f.anchor_aliases.filter((a) => String(a || "").trim().length > 0)
+        : [];
+      const direction = f.anchor_direction || "right";
+      const maxTokens = Number(f.anchor_max_tokens || 4);
+      const anchorSummary = aliases.length
+        ? `${aliases.slice(0, 2).join(" | ")} (${direction}, ${maxTokens})`
+        : "-";
+      return `
       <tr>
         <td><code>${escapeHtml(f.field_key)}</code></td>
         <td>${escapeHtml(f.field_label || "-")}</td>
         <td>${[f.roi_x0, f.roi_y0, f.roi_x1, f.roi_y1].map((v) => v?.toFixed(3) || "?").join(", ")}</td>
         <td>${f.target_page || 1}</td>
+        <td>${escapeHtml(anchorSummary)}</td>
         <td>${f.is_required ? "✓" : "✗"}</td>
       </tr>
-    `).join("");
+    `;
+    }).join("");
   }
 
   function renderQueryResultsTable(results) {
@@ -1080,3 +1099,4 @@
   // Boot
   document.addEventListener("DOMContentLoaded", init);
 })();
+

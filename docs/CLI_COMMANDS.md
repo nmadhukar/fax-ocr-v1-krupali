@@ -231,7 +231,7 @@ docker inspect --format='{{.State.Health.Status}}' fax_worker
 ### MinIO Console
 
 Access the MinIO web console at `http://localhost:9001`:
-- Default credentials: `minioadmin` / `minioadmin123`
+- Credentials are configured via `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` in your env file (**required** — no defaults)
 - Browse buckets: `fax-documents`, `templates`
 - View uploaded files and manage storage
 
@@ -396,6 +396,9 @@ Located in `infra/migrations/`:
 | `008_template_config.sql` | Template config column additions |
 | `009_hitl_flagged_fields.sql` | HITL flagged_fields JSONB column |
 | `010_add_dedup_constraint.sql` | Deduplication constraint on fax_job |
+| `012_label_example_unique_constraint.sql` | Unique constraint on fax_label_example (job + page + field) |
+| `013_partial_unique_active_version.sql` | Partial unique index ensuring one active version per template |
+| `014_bigint_pk_columns.sql` | Upgrade high-volume PKs (ocr_token, audit_log) to BIGINT |
 
 ---
 
@@ -513,14 +516,14 @@ pytest tests/test_review_workflow_guards.py -v
 #### Required
 
 ```bash
-DATABASE_URL=postgresql+psycopg2://faxadmin:password@localhost:5432/fax_processor
+DATABASE_URL=postgresql+psycopg2://faxadmin:password@localhost:5432/fax_processor  # required, no default
 REDIS_URL=redis://:password@localhost:6379/0
 CELERY_BROKER_URL=redis://:password@localhost:6379/0
 CELERY_RESULT_BACKEND=redis://:password@localhost:6379/1
 MINIO_ENDPOINT=localhost:9000
-MINIO_ACCESS_KEY=minioadmin
-MINIO_SECRET_KEY=your-secret
-SECRET_KEY=your-32-char-minimum-secret-key
+MINIO_ACCESS_KEY=your-access-key    # required, no default
+MINIO_SECRET_KEY=your-secret-key    # required, no default
+SECRET_KEY=your-32-char-minimum-secret-key  # required, no default
 ```
 
 #### Optional (with defaults)

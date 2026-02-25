@@ -263,7 +263,7 @@ For each field, the merger:
 
 ### Stage 12 — Confidence Scoring
 
-`libs/shared/monitoring/pipeline_metrics.py` computes an overall confidence score for the job by averaging field-level confidence scores. Critical fields (patient_name, member_id, auth dates, decision, service_code, diagnosis_code) are weighted more heavily.
+`libs/shared/monitoring/pipeline_metrics.py` computes an overall confidence score for the job by averaging field-level confidence scores. The canonical set of 9 critical fields (patient_name, patient_dob, member_id, prior_auth_number, auth_effective_date, auth_expiration_date, decision, service_code, diagnosis_codes) is defined in `libs/shared/extraction/constants.py` and imported by all modules. These fields are weighted more heavily.
 
 ### Stage 13 — Validation
 
@@ -284,7 +284,7 @@ Any field with a winning candidate confidence below 0.30 is classified as not pr
 
 Fields that passed the 0.30 threshold but are below a higher review threshold are flagged for human attention:
 
-- **Critical fields** (patient_name, member_id, auth_effective_date, auth_expiration_date, decision, service_code, diagnosis_code): flagged if confidence < 0.85
+- **Critical fields** (patient_name, patient_dob, member_id, prior_auth_number, auth_effective_date, auth_expiration_date, decision, service_code, diagnosis_codes — 9 fields defined in `libs/shared/extraction/constants.py`): flagged if confidence < 0.85
 - **Other fields**: flagged if confidence < 0.75
 
 Flagged fields are stored in the `fax_extraction.flagged_fields` JSONB column. If one or more fields are flagged, the job status is set to `NEEDS_REVIEW`.
@@ -408,15 +408,15 @@ Admin users can query across all tenants and are identified by an `is_admin` fla
 
 **Authentication**: All endpoints require a JWT Bearer token. Tokens are signed with `SECRET_KEY` using HS256.
 
-**Authorization**: Tenant isolation is enforced at the database query level (not just in the route handler).
+**Authorization**: Tenant isolation is **always enforced** at the database query level regardless of environment (not just in the route handler). The development-mode bypass user has `reviewer` role (not admin).
 
 **HIPAA Audit Logging**: Every operation that reads or writes patient data (upload, status, results, review packet, corrections) is logged to the `audit_log` table with: user identity, tenant, action, resource ID, timestamp, and outcome.
 
 **Rate Limiting**: Token-bucket algorithm with background cleanup. Limits are per authenticated user. A background daemon thread runs every 5 minutes to remove expired bucket entries.
 
-**File Validation**: Uploads are validated for MIME type (PDF only), file size, and basic structural integrity before being stored.
+**File Validation**: Uploads are validated for content type, file size, and magic bytes. `None` content types are rejected. Files are read in chunks with a size cap, and `validate_file_magic()` is called after read.
 
-**Credential Enforcement**: When `ENVIRONMENT=production`, the application raises a `RuntimeError` at startup if `SECRET_KEY`, `MINIO_ACCESS_KEY`, or `MINIO_SECRET_KEY` contain their default development values.
+**Credential Enforcement**: `DATABASE_URL`, `SECRET_KEY`, `MINIO_ACCESS_KEY`, and `MINIO_SECRET_KEY` all default to empty strings and must be explicitly configured. In staging and production environments, additional validation ensures these are not left empty — the application raises a `RuntimeError` at startup if any are missing.
 
 ---
 

@@ -129,14 +129,9 @@ class FieldValidator:
         if payer_name:
             return self.payer_rules.is_critical_field(payer_name, field_key)
 
-        # Default critical fields (aligned with hitl.py _CRITICAL_FIELDS)
-        critical_fields = [
-            "member_id",
-            "prior_auth_number",
-            "patient_name",
-            "patient_dob",
-        ]
-        return field_key in critical_fields
+        # Without payer context we should not hard-fail empty values as "required".
+        # Requirement enforcement is payer/business-rule specific.
+        return False
 
     def _validate_by_type(self, field_key: str, value: str) -> dict[str, Any]:
         """

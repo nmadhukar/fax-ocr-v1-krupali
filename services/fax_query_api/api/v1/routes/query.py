@@ -70,7 +70,7 @@ class QueryResponse(BaseModel):
     query: str
     tier: int
     results: list[QueryResultItem]
-    total_results: int
+    result_count: int
     latency_ms: float
 
 
@@ -365,6 +365,6 @@ def query_faxes(
         query=body.query,
         tier=body.tier,
         results=results,
-        total_results=len(results),
+        result_count=len(results),
         latency_ms=round(elapsed, 1),
     )

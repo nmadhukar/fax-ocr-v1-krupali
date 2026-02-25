@@ -34,11 +34,15 @@ from typing import Any
 # Human-readable method labels shown to clients
 _METHOD_DISPLAY: dict[str, str] = {
     "TEMPLATE_OCR": "TEMPLATE_OCR",
+    "OCR_LABEL":    "OCR_LABEL",
     "LAYOUTLM":     "LAYOUTLM",
     "VLM":          "VLM",
+    "DONUT":        "DONUT",
     "HYBRID":       "HYBRID",
     "HUMAN_REVIEW": "HUMAN_REVIEW",
+    "HUMAN":        "HUMAN",
     "LLM":          "LLM",
+    "SYSTEM":       "SYSTEM",
 }
 
 
@@ -123,6 +127,8 @@ def format_for_client(extraction_json: dict[str, Any]) -> dict[str, Any]:
 def format_summary(
     extraction_json: dict[str, Any],
     flagged_fields: list[dict[str, Any]] | None = None,
+    payer_name: str | None = None,
+    fax_received_date: str | None = None,
 ) -> dict[str, Any]:
     """
     Full client response for a completed job — fields + quality summary.
@@ -130,11 +136,29 @@ def format_summary(
     Args:
         extraction_json: Internal extraction_json from DB.
         flagged_fields: Optional HITL flag list from fax_extraction.flagged_fields.
+        payer_name: Insurance company name from job metadata.
+        fax_received_date: Formatted timestamp from job.created_at.
 
     Returns:
         Dict with fields, flagged_field_keys, quality stats.
     """
     fields = format_for_client(extraction_json)
+
+    # Inject metadata-sourced fields
+    if payer_name is not None:
+        fields["payer_name"] = {
+            "value": payer_name,
+            "confidence": 1.0,
+            "source": "SYSTEM",
+            "not_present": False,
+        }
+    if fax_received_date is not None:
+        fields["fax_received_date"] = {
+            "value": fax_received_date,
+            "confidence": 1.0,
+            "source": "SYSTEM",
+            "not_present": False,
+        }
 
     total = len(fields)
     found = sum(1 for f in fields.values() if not f["not_present"])

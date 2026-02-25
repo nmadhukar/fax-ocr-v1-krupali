@@ -224,7 +224,10 @@ curl http://localhost:8001/v1/faxes/3fa85f64-5717-4562-b3fc-2c963f66afa6/results
 | `OCR_LABEL` | Found by scanning OCR text for field labels |
 | `LAYOUTLM` | LayoutLM AI model filled in a gap |
 | `HYBRID` | Multiple sources agreed; values merged |
+| `DONUT` | Extracted by Donut end-to-end model |
 | `HUMAN_REVIEW` | Value was corrected by a human reviewer |
+| `HUMAN` | Manually entered by a human operator |
+| `SYSTEM` | Metadata-sourced field (payer name, fax received date) — not OCR-extracted |
 
 ---
 
@@ -778,7 +781,7 @@ curl -X POST http://localhost:8003/v1/query \
       "similarity_score": null
     }
   ],
-  "total_results": 1,
+  "result_count": 1,
   "processing_time_ms": 12
 }
 ```

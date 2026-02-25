@@ -297,30 +297,38 @@ Response `200 OK`:
 | Source | Meaning |
 |---|---|
 | `TEMPLATE_OCR` | Extracted using label-anchored template matching against OCR tokens |
+| `OCR_LABEL` | Found by scanning OCR text for field labels |
 | `LAYOUTLM` | Extracted by the LayoutLM Document QA model |
 | `HYBRID` | Multiple extraction sources agreed; highest confidence value used |
+| `DONUT` | Extracted by Donut end-to-end model |
 | `HUMAN_REVIEW` | Manually corrected by a human reviewer — treat as authoritative |
+| `HUMAN` | Manually entered by a human operator |
+| `SYSTEM` | Metadata-sourced field (payer name, fax received date) — not OCR-extracted |
 | `UNKNOWN` | Legacy or fallback — source could not be determined |
 
-**Extractable fields:**
+**Extractable fields (18 total):**
 
-| Field Key | Description | Format |
-|---|---|---|
-| `patient_name` | Patient full name | Free text |
-| `member_id` | Health plan member ID | Alphanumeric |
-| `prior_auth_number` | Prior authorization reference number | Alphanumeric |
-| `patient_dob` | Patient date of birth | MM/DD/YYYY |
-| `auth_effective_date` | Authorization start date | MM/DD/YYYY |
-| `auth_expiration_date` | Authorization end date | MM/DD/YYYY |
-| `next_review_date` | Next clinical review date | MM/DD/YYYY |
-| `provider_name` | Treating provider or facility name | Free text |
-| `provider_npi` | National Provider Identifier | 10-digit number |
-| `provider_phone` | Provider phone number | Phone format |
-| `provider_fax` | Provider fax number | Phone format |
-| `service_code` | HCPCS or CPT service code | Alphanumeric |
-| `units_requested` | Units or days requested/approved | Numeric string |
-| `diagnosis_code` | ICD-10 diagnosis code | ICD-10 format |
-| `decision` | Authorization decision | APPROVED / DENIED / PENDING |
+| Field Key | Description | Format | Source |
+|---|---|---|---|
+| `payer_name` | Insurance company name | Payer enum value | SYSTEM |
+| `member_id` | Health plan member ID | Alphanumeric | OCR |
+| `patient_name` | Patient/member full name | Free text | OCR |
+| `patient_dob` | Patient date of birth | MM/DD/YYYY | OCR |
+| `decision` | Authorization decision | APPROVED / DENIED / PENDING | OCR |
+| `prior_auth_number` | Prior authorization reference number | Alphanumeric | OCR |
+| `service_code` | HCPCS or CPT service code | Alphanumeric | OCR |
+| `units_requested` | Units or days requested/approved | Numeric string | OCR |
+| `auth_effective_date` | Authorization start date (From Date) | MM/DD/YYYY | OCR |
+| `auth_expiration_date` | Authorization end date (To Date) | MM/DD/YYYY | OCR |
+| `insurance_rep_name` | Insurance representative who approved/denied | Free text | OCR |
+| `insurance_rep_phone` | Insurance representative contact number | Phone format | OCR |
+| `fax_received_date` | Date and time fax was received | MM/DD/YYYY HH:MM | SYSTEM |
+| `next_review_date` | Next clinical review date | MM/DD/YYYY | OCR |
+| `provider_name` | Treating provider or facility name | Free text | OCR |
+| `provider_npi` | National Provider Identifier | 10-digit number | OCR |
+| `provider_phone` | Provider phone number | Phone format | OCR |
+| `provider_fax` | Provider fax number | Phone format | OCR |
+| `diagnosis_codes` | ICD-10 diagnosis code | ICD-10 format | OCR |
 
 Response `404`: Job not found
 Response `409`: Job not yet complete (status is PENDING or PROCESSING)
@@ -595,7 +603,7 @@ Request body:
 | `notes` | string | No | Free-text reviewer notes |
 | `corrected_fields` | array | No | List of field corrections |
 | `corrected_fields[].field_key` | string | Yes | The field to correct |
-| `corrected_fields[].corrected_value` | string | Yes | The correct value |
+| `corrected_fields[].corrected_value` | string | Yes | The correct value (empty string allowed for false-positive fields) |
 
 Response `200 OK`:
 ```json

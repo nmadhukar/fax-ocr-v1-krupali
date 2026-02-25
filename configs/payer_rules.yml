@@ -33,11 +33,11 @@ payers:
         format: "MM/DD/YYYY"
         validate_after_effective: true
 
-      npi:
+      provider_npi:
         regex: '^\d{10}$'
         description: "10 digit NPI"
 
-      phone:
+      provider_phone:
         regex: '^\(\d{3}\) \d{3}-\d{4}$|^\d{10}$'
         description: "US phone number"
 

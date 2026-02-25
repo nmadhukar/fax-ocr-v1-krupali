@@ -25,10 +25,17 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-os.environ.setdefault("DATABASE_URL", "postgresql+psycopg2://faxadmin:faxpass123@localhost:5432/fax_processor")
+# H3-FIX: Fail fast if credentials are not set — no hardcoded defaults.
+_REQUIRED_ENV = ["DATABASE_URL"]
+_missing = [v for v in _REQUIRED_ENV if not os.environ.get(v)]
+if _missing:
+    print(
+        f"ERROR: Required environment variables not set: {', '.join(_missing)}\n"
+        f"Set them before running this script.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 os.environ.setdefault("MINIO_ENDPOINT", "localhost:9000")
-os.environ.setdefault("MINIO_ACCESS_KEY", "minioadmin")
-os.environ.setdefault("MINIO_SECRET_KEY", "minioadmin123")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("export_training")

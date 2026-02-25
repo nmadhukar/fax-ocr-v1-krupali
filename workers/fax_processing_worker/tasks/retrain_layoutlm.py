@@ -28,6 +28,7 @@ promote it via the model_version API after reviewing accuracy metrics.
 To auto-promote, set RETRAIN_AUTO_PROMOTE=true.
 """
 
+import json
 import logging
 import os
 import subprocess
@@ -50,7 +51,10 @@ _AUTO_PROMOTE = os.environ.get("RETRAIN_AUTO_PROMOTE", "false").lower() == "true
 _TRAIN_CANDIDATE_RANKER = (
     os.environ.get("RETRAIN_TRAIN_CANDIDATE_RANKER", "true").lower() == "true"
 )
-_SCRIPTS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "scripts"
+# L3-FIX: Prefer PROJECT_ROOT env var; fall back to __file__-based traversal
+_SCRIPTS_DIR = Path(
+    os.environ.get("PROJECT_ROOT", Path(__file__).resolve().parent.parent.parent.parent)
+) / "scripts"
 _PYTHON = sys.executable
 
 
@@ -183,8 +187,23 @@ def check_and_retrain_layoutlm(self) -> dict:
         result["reason"] = f"Pipeline failed: {exc}"
         return result
 
-    # ── register model version ────────────────────────────────────────────
-    adapter_path = str(Path(_OUTPUT_DIR) / "adapter")
+    # ── H5-FIX: validate adapter output before registering ───────────────
+    adapter_path = Path(_OUTPUT_DIR) / "adapter"
+    if not adapter_path.exists() or not any(adapter_path.iterdir()):
+        logger.error(
+            "Adapter directory is empty or missing: %s — aborting registration",
+            adapter_path,
+        )
+        with get_db_session() as db:
+            _audit_log(db, "RETRAIN_FAILED", {
+                "version_tag": version_tag,
+                "error": f"Adapter directory empty/missing: {adapter_path}",
+            })
+            db.commit()
+        result["reason"] = f"Adapter output validation failed: {adapter_path}"
+        return result
+
+    adapter_path_str = str(adapter_path)
 
     with get_db_session() as db:
         from libs.shared.db.repositories.model_version_repo import ModelVersionRepository
@@ -193,7 +212,7 @@ def check_and_retrain_layoutlm(self) -> dict:
         version = mv_repo.register_version(
             model_type="layoutlm",
             version_tag=version_tag,
-            model_path=adapter_path,
+            model_path=adapter_path_str,
             notes=(
                 f"Auto-retrained on {new_count} new labels. "
                 f"Triggered at {now.isoformat()}."
@@ -207,12 +226,37 @@ def check_and_retrain_layoutlm(self) -> dict:
         )
 
         if _AUTO_PROMOTE:
-            mv_repo.promote(version.model_version_id, promoted_by="celery-beat")
-            logger.info("Auto-promoted adapter to production: %s", version_tag)
+            # Safety gate: only promote if accuracy meets minimum threshold
+            _metrics_path = Path(_OUTPUT_DIR) / "metrics_exact_match.json"
+            _promote_threshold = float(
+                os.environ.get("RETRAIN_MIN_PROMOTE_ACCURACY", "0.70")
+            )
+            _accuracy = 0.0
+            if _metrics_path.exists():
+                try:
+                    _m_data = json.loads(_metrics_path.read_text(encoding="utf-8"))
+                    if _m_data:
+                        _total_reviewed = sum(r.get("reviewed_fields", 0) for r in _m_data)
+                        _total_exact = sum(r.get("exact_match", 0) for r in _m_data)
+                        _accuracy = _total_exact / _total_reviewed if _total_reviewed else 0.0
+                except Exception:
+                    logger.warning("Could not read metrics for accuracy gate")
+
+            if _accuracy >= _promote_threshold:
+                mv_repo.promote(version.model_version_id, promoted_by="celery-beat")
+                logger.info(
+                    "Auto-promoted adapter %s (accuracy=%.4f >= %.4f)",
+                    version_tag, _accuracy, _promote_threshold,
+                )
+            else:
+                logger.warning(
+                    "Auto-promote SKIPPED for %s: accuracy=%.4f < threshold=%.4f",
+                    version_tag, _accuracy, _promote_threshold,
+                )
 
         _audit_log(db, "RETRAIN_COMPLETED", {
             "version_tag": version_tag,
-            "adapter_path": adapter_path,
+            "adapter_path": adapter_path_str,
             "new_label_count": new_count,
             "auto_promoted": _AUTO_PROMOTE,
         })
@@ -221,7 +265,7 @@ def check_and_retrain_layoutlm(self) -> dict:
     logger.info(
         "Re-training complete: version=%s adapter=%s auto_promote=%s",
         version_tag,
-        adapter_path,
+        adapter_path_str,
         _AUTO_PROMOTE,
     )
 
@@ -271,12 +315,17 @@ def _audit_log(db, event_type: str, data: dict) -> None:
     try:
         db.execute(
             text("""
-                INSERT INTO audit_log (event_type, event_data)
-                VALUES (:etype, :edata::jsonb)
+                INSERT INTO audit_log
+                    (tenant_id, user_id, action, resource_type, details)
+                VALUES
+                    (:tenant_id, :user_id, :action, :resource_type, CAST(:details AS jsonb))
             """),
             {
-                "etype": event_type,
-                "edata": json.dumps(data),
+                "tenant_id": "system",
+                "user_id": "fax-beat",
+                "action": event_type,
+                "resource_type": "model_retraining",
+                "details": json.dumps(data),
             },
         )
     except Exception as exc:

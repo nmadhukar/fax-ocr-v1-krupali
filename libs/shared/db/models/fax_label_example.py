@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, Enum, ForeignKey, String, Text, text
+from sqlalchemy import Boolean, Enum, ForeignKey, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -31,6 +31,12 @@ class FaxLabelExample(Base):
     """
 
     __tablename__ = "fax_label_example"
+    __table_args__ = (
+        UniqueConstraint(
+            "fax_job_id", "fax_page_id", "field_key",
+            name="uq_label_example_job_page_field",
+        ),
+    )
 
     label_example_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),

@@ -13,7 +13,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from libs.shared.db.models.fax_job import FaxJob
@@ -94,30 +94,43 @@ class FeedbackAnalyzer:
         for c in corrections:
             field_counts[c["field_key"]] += 1
 
-        total_jobs = self.db.execute(select(func.count()).select_from(FaxJob)).scalar() or 1
-
         recommendations = []
         for field_key, count in sorted(field_counts.items(), key=lambda x: -x[1]):
-            rate = count / total_jobs
+            # C1-FIX: Use per-field job count, not total jobs ever.
+            field_total = self.db.execute(
+                text(
+                    "SELECT COUNT(DISTINCT fax_job_id) FROM fax_extracted_field"
+                    " WHERE field_key = :fk"
+                ),
+                {"fk": field_key},
+            ).scalar() or 1
+            rate = count / field_total
+
             if count >= self.MIN_SAMPLES and rate > self.HIGH_CORRECTION_RATE:
-                recommendations.append({
-                    "field_key": field_key,
-                    "correction_count": count,
-                    "correction_rate": round(rate, 4),
-                    "recommendation": "LOWER_AUTO_FINALIZE_THRESHOLD",
-                    "detail": (
-                        f"Field '{field_key}' is corrected {rate:.0%} of the time. "
-                        f"Consider lowering the confidence threshold or flagging for review."
-                    ),
-                })
+                action = "LOWER_AUTO_FINALIZE_THRESHOLD"
+                detail = (
+                    f"Field '{field_key}' is corrected {rate:.0%} of the time. "
+                    f"Consider lowering the confidence threshold or flagging for review."
+                )
+                # L1-FIX: Also include ROI drift warning when correction count is high
+                if count >= 5:
+                    detail += (
+                        f" ({count} recent corrections — check if template ROI has shifted.)"
+                    )
             elif count >= self.MIN_SAMPLES:
-                recommendations.append({
-                    "field_key": field_key,
-                    "correction_count": count,
-                    "correction_rate": round(rate, 4),
-                    "recommendation": "MONITOR",
-                    "detail": f"Field '{field_key}' has moderate correction rate.",
-                })
+                action = "MONITOR"
+                detail = f"Field '{field_key}' has moderate correction rate."
+            else:
+                continue
+
+            recommendations.append({
+                "field_key": field_key,
+                "correction_count": count,
+                "correction_rate": round(rate, 4),
+                "field_total_jobs": field_total,
+                "recommendation": action,
+                "detail": detail,
+            })
         return recommendations
 
     def _analyze_payer_corrections(
@@ -157,15 +170,40 @@ class FeedbackAnalyzer:
         return recommendations
 
     def _detect_ocr_patterns(self, corrections: list[dict]) -> list[dict[str, Any]]:
-        """Detect systematic OCR misread patterns (0/O, 1/I/l, 5/S, etc.)."""
+        """Detect systematic OCR misread patterns (0/O, 1/I/l, 5/S, etc.).
+
+        M4-FIX: Now handles different-length strings via single-char edit
+        detection (insertions, deletions, substitutions).
+        """
         substitutions: dict[tuple[str, str], int] = defaultdict(int)
         for c in corrections:
             orig = c.get("original_value") or ""
             corr = c.get("corrected_value") or ""
-            if len(orig) == len(corr) and orig != corr:
+            if not orig or not corr or orig == corr:
+                continue
+            # Same-length: direct character comparison
+            if len(orig) == len(corr):
                 for o_char, c_char in zip(orig, corr):
                     if o_char != c_char:
                         substitutions[(o_char, c_char)] += 1
+            # Different-length (within 2 chars): detect insertions/deletions
+            elif abs(len(orig) - len(corr)) <= 2:
+                i, j = 0, 0
+                while i < len(orig) and j < len(corr):
+                    if orig[i] != corr[j]:
+                        if len(orig) > len(corr):  # deletion
+                            substitutions[(orig[i], "<DEL>")] += 1
+                            i += 1
+                        elif len(orig) < len(corr):  # insertion
+                            substitutions[("<INS>", corr[j])] += 1
+                            j += 1
+                        else:
+                            substitutions[(orig[i], corr[j])] += 1
+                            i += 1
+                            j += 1
+                        continue
+                    i += 1
+                    j += 1
 
         return [
             {"ocr_reads": o, "should_be": c, "occurrences": n}
@@ -174,7 +212,12 @@ class FeedbackAnalyzer:
         ][:10]
 
     def _check_roi_drift(self, corrections: list[dict]) -> list[dict[str, Any]]:
-        """Flag fields with high correction counts (potential template ROI drift)."""
+        """Flag fields with high correction counts (potential template ROI drift).
+
+        L1-FIX: Now delegates to _analyze_field_corrections which includes
+        ROI drift warnings inline. This method returns the subset with high
+        correction counts for backward compatibility.
+        """
         field_counts: dict[str, int] = defaultdict(int)
         for c in corrections:
             field_counts[c["field_key"]] += 1

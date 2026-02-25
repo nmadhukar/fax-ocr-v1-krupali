@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -164,7 +164,7 @@ class OcrTokenRepository(BaseRepository[FaxOcrToken]):
 
     def delete_by_page(self, fax_page_id: UUID) -> int:
         """
-        Delete all tokens for a page.
+        Delete all tokens for a page in a single bulk DELETE.
 
         Args:
             fax_page_id: Page UUID.
@@ -172,18 +172,10 @@ class OcrTokenRepository(BaseRepository[FaxOcrToken]):
         Returns:
             Number of tokens deleted.
         """
-        stmt = (
-            select(FaxOcrToken)
-            .where(FaxOcrToken.fax_page_id == fax_page_id)
-        )
-        tokens = list(self.db.execute(stmt).scalars().all())
-        count = len(tokens)
-
-        for token in tokens:
-            self.db.delete(token)
-
+        stmt = delete(FaxOcrToken).where(FaxOcrToken.fax_page_id == fax_page_id)
+        result = self.db.execute(stmt)
         self.db.flush()
-        return count
+        return result.rowcount
 
     def count_by_page(self, fax_page_id: UUID) -> int:
         """Count tokens for a page."""

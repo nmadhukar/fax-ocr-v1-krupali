@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import String, Text, text
+from sqlalchemy import BigInteger, String, Text, text
 from sqlalchemy.dialects.postgresql import INET, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -25,6 +25,7 @@ class AuditLog(Base):
 
     # Primary key (BIGSERIAL for high volume)
     audit_id: Mapped[int] = mapped_column(
+        BigInteger,
         primary_key=True,
         autoincrement=True,
     )

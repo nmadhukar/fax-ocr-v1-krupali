@@ -205,7 +205,7 @@ class FieldBuilder:
 
         scored = self._score_candidates(candidates, field_key=field_key)
         best_candidate, score = max(scored, key=lambda x: x[1])
-        final_conf = min(score, 1.0)
+        final_conf = max(0.0, min(score, 1.0))
 
         method = (
             ExtractionMethodEnum.HYBRID if len(candidates) > 1 else best_candidate.method

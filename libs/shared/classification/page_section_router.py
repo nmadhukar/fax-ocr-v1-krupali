@@ -113,6 +113,15 @@ KEY_FIELDS_SECTION_POLICY: dict[str, set[str]] = {
     "units_requested": {SECTION_AUTH_SUMMARY},
 }
 
+# M2-FIX: Pre-compile all regex patterns at module load time.
+_COMPILED_SECTION_PATTERNS: dict[str, dict[str, list[re.Pattern]]] = {
+    section: {
+        group: [re.compile(pat) for pat in patterns]
+        for group, patterns in pattern_sets.items()
+    }
+    for section, pattern_sets in _SECTION_PATTERNS.items()
+}
+
 
 @dataclass
 class PageSectionResult:
@@ -142,10 +151,11 @@ class PageSectionRouter:
         text: str,
         *,
         is_cover_page: bool = False,
+        page_number: int = 0,
     ) -> PageSectionResult:
         if is_cover_page:
             return PageSectionResult(
-                page_number=0,
+                page_number=page_number,
                 section=SECTION_COVER,
                 confidence=1.0,
                 evidence=["cover_page_flag"],
@@ -154,7 +164,7 @@ class PageSectionRouter:
 
         if not text.strip():
             return PageSectionResult(
-                page_number=0,
+                page_number=page_number,
                 section=SECTION_OTHER,
                 confidence=0.0,
                 evidence=["empty_text"],
@@ -164,18 +174,18 @@ class PageSectionRouter:
         scores: dict[str, float] = {}
         evidence_map: dict[str, list[str]] = {}
 
-        for section, pattern_sets in _SECTION_PATTERNS.items():
+        for section, pattern_sets in _COMPILED_SECTION_PATTERNS.items():
             strong_hits = []
             for pat in pattern_sets["strong"]:
-                m = re.search(pat, text)
+                m = pat.search(text)
                 if m:
                     strong_hits.append(m.group(0)[:120])
 
             weak_hits = sum(
-                1 for pat in pattern_sets["weak"] if re.search(pat, text)
+                1 for pat in pattern_sets["weak"] if pat.search(text)
             )
             neg_hits = sum(
-                1 for pat in pattern_sets["negative"] if re.search(pat, text)
+                1 for pat in pattern_sets["negative"] if pat.search(text)
             )
 
             score = 0.0
@@ -193,7 +203,7 @@ class PageSectionRouter:
             best_section = SECTION_OTHER
 
         return PageSectionResult(
-            page_number=0,
+            page_number=page_number,
             section=best_section,
             confidence=best_score,
             evidence=evidence_map.get(best_section, []),
@@ -210,8 +220,9 @@ class PageSectionRouter:
         routed: dict[int, PageSectionResult] = {}
 
         for page_num, text in page_texts.items():
-            result = self.classify_page(text, is_cover_page=page_num in cover_pages)
-            result.page_number = page_num
+            result = self.classify_page(
+                text, is_cover_page=page_num in cover_pages, page_number=page_num
+            )
             routed[page_num] = result
 
         return routed

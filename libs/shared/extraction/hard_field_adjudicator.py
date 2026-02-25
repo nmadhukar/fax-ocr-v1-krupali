@@ -24,6 +24,9 @@ _METHOD_RELIABILITY = {
     ExtractionMethodEnum.VLM: 0.95,
     ExtractionMethodEnum.LLM: 1.00,
     ExtractionMethodEnum.HYBRID: 1.00,
+    ExtractionMethodEnum.DONUT: 0.85,
+    ExtractionMethodEnum.HUMAN_REVIEW: 1.10,
+    ExtractionMethodEnum.HUMAN: 1.10,
 }
 
 
@@ -39,9 +42,11 @@ class AdjudicationResult:
     def to_candidate(self) -> ExtractionCandidate | None:
         if not self.value:
             return None
+        # H4-FIX: Use HYBRID (not LLM) — adjudicator uses validation scoring,
+        # not an LLM.  LLM tag corrupts method-based metrics and ranker bias.
         return ExtractionCandidate(
             value=self.value,
-            method=ExtractionMethodEnum.LLM,
+            method=ExtractionMethodEnum.HYBRID,
             confidence=self.confidence,
             evidence_text=self.reason,
             evidence_bbox=None,

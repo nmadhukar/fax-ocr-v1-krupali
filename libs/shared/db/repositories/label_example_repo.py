@@ -121,6 +121,29 @@ class LabelExampleRepository(BaseRepository[FaxLabelExample]):
 
         return result
 
+    def update_label(
+        self,
+        fax_job_id: UUID,
+        fax_page_id: UUID,
+        field_key: str,
+        ground_truth_value: str,
+        ground_truth_bbox: dict | None = None,
+    ) -> None:
+        """Update an existing training label (on duplicate key)."""
+        stmt = (
+            select(FaxLabelExample)
+            .where(
+                FaxLabelExample.fax_job_id == fax_job_id,
+                FaxLabelExample.fax_page_id == fax_page_id,
+                FaxLabelExample.field_key == field_key,
+            )
+        )
+        existing = self.db.execute(stmt).scalar_one_or_none()
+        if existing:
+            existing.ground_truth_value = ground_truth_value
+            existing.ground_truth_bbox = ground_truth_bbox
+            self.db.flush()
+
     def count_by_payer(self) -> dict[str, int]:
         """Get count of training examples per payer."""
         from sqlalchemy import func

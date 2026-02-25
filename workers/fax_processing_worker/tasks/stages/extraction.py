@@ -558,7 +558,7 @@ def hard_field_adjudication(ctx: PipelineContext) -> None:
         ctx.field_repo.upsert_field(
             fax_job_id=ctx.job_uuid,
             field_key=field_key,
-            method=ExtractionMethodEnum.LLM,
+            method=candidate.method,
             field_value=candidate.value,
             field_conf=candidate.confidence,
             evidence_bbox=candidate.evidence_bbox,

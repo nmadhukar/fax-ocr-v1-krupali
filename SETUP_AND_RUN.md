@@ -336,7 +336,10 @@ Poll this endpoint until `status` changes from `PROCESSING`:
 | `OCR_LABEL` | Found by scanning OCR text for field labels |
 | `LAYOUTLM` | LayoutLM AI model filled in a gap |
 | `HYBRID` | Multiple sources agreed; merged result |
+| `DONUT` | Extracted by Donut end-to-end model |
 | `HUMAN_REVIEW` | A human reviewer corrected this field |
+| `HUMAN` | Manually entered by a human operator |
+| `SYSTEM` | Metadata-sourced field (payer name, fax received date) — not OCR-extracted |
 
 **If `status` is `NEEDS_REVIEW`** — some fields have confidence below threshold and were flagged. Proceed to Step D.
 
@@ -552,7 +555,7 @@ The Operations Console is the primary browser interface for day-to-day operation
 
 ### MinIO Storage Console — http://localhost:9001
 
-Credentials: `minioadmin` / `minioadmin123`
+> **Security note:** MinIO credentials must be explicitly configured. There are no default credentials in the application — `MINIO_ACCESS_KEY` and `MINIO_SECRET_KEY` default to empty strings and must be set in `.env.docker`. For local testing with the Docker Compose stack, the compose file sets initial values; change them before any production deployment.
 
 View uploaded fax images and page thumbnails directly in the browser.
 
@@ -660,9 +663,10 @@ Edit `.env.docker` before going to production:
 | Variable | Development | Production |
 |----------|-------------|------------|
 | `ENVIRONMENT` | `development` | `production` |
-| `SECRET_KEY` | `dev-secret-key-...` | **Generate a strong random key** |
-| `MINIO_ACCESS_KEY` | `minioadmin` | Change to a strong value |
-| `MINIO_SECRET_KEY` | `minioadmin123` | Change to a strong value |
+| `DATABASE_URL` | — (**required**, no default) | Use a strong password in the connection string |
+| `SECRET_KEY` | — (**required**, no default) | **Generate a strong random key** |
+| `MINIO_ACCESS_KEY` | — (**required**, no default) | Change to a strong value |
+| `MINIO_SECRET_KEY` | — (**required**, no default) | Change to a strong value |
 | `API_ALLOWED_ORIGINS` | `["http://localhost:*"]` | Set to your frontend domain |
 
 ### Generate a strong SECRET_KEY
@@ -679,7 +683,7 @@ In production, place an nginx or Traefik reverse proxy in front of ports 8001, 8
 
 ### Authentication
 
-In development mode (`ENVIRONMENT=development`), all requests run as an admin user with no token required — convenient for testing.
+In development mode (`ENVIRONMENT=development`), a synthetic bypass user is created with `reviewer` role (not admin) and no token is required — convenient for testing. **Tenant isolation is always enforced** regardless of environment.
 
 In production mode (`ENVIRONMENT=production`), every request must include a JWT Bearer token in the `Authorization` header. Contact your system administrator for token issuance setup.
 

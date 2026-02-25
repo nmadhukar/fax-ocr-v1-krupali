@@ -36,15 +36,20 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="repla
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-os.environ.setdefault(
-    "DATABASE_URL",
-    "postgresql+psycopg2://faxadmin:faxpass123@127.0.0.1:5432/fax_processor",
-)
+# H3-FIX: Fail fast if credentials are not set — no hardcoded defaults.
+_REQUIRED_ENV = ["DATABASE_URL"]
+_missing = [v for v in _REQUIRED_ENV if not os.environ.get(v)]
+if _missing:
+    print(
+        f"ERROR: Required environment variables not set: {', '.join(_missing)}\n"
+        f"Set them before running this script, e.g.:\n"
+        f"  DATABASE_URL=postgresql+psycopg2://user:pass@host/db python {sys.argv[0]}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 os.environ.setdefault("MINIO_ENDPOINT", "127.0.0.1:9000")
-os.environ.setdefault("MINIO_ACCESS_KEY", "minioadmin")
-os.environ.setdefault("MINIO_SECRET_KEY", "minioadmin123")
 os.environ.setdefault("ENVIRONMENT", "development")
-os.environ.setdefault("SECRET_KEY", "dev-secret-key-batch3-test")
+os.environ.setdefault("SECRET_KEY", os.environ.get("SECRET_KEY", "dev-only"))
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
@@ -186,8 +191,55 @@ def process_jobs(
 
     logger.info("Found %d jobs with extraction data", len(rows))
 
+    # ── C2-FIX: Load all human corrections so we prefer them as ground truth ─
+    correction_rows = db.execute(
+        text("""
+            SELECT fax_job_id, field_key, corrected_value
+            FROM fax_feedback
+            WHERE corrected_value IS NOT NULL
+              AND feedback_type = 'correction'
+        """)
+    ).fetchall()
+    # Map: (job_id, field_key) → corrected_value
+    corrections_map: dict[tuple, str] = {}
+    for cr in correction_rows:
+        corrections_map[(cr.fax_job_id, cr.field_key)] = cr.corrected_value
+    logger.info("Loaded %d human corrections from fax_feedback", len(corrections_map))
+
+    # ── M1-FIX: Batch-load all pages for all job IDs in one query ────────────
+    all_job_ids = [row.fax_job_id for row in rows]
+    pages_map: dict = {}  # job_id → list of page rows
+    if all_job_ids:
+        page_rows = db.execute(
+            text("""
+                SELECT fax_page_id, fax_job_id, page_number, is_cover_page,
+                       page_storage_key, preprocessed_storage_key
+                FROM fax_page
+                WHERE fax_job_id = ANY(:job_ids)
+                ORDER BY page_number
+            """),
+            {"job_ids": all_job_ids},
+        ).fetchall()
+        for pg in page_rows:
+            pages_map.setdefault(pg.fax_job_id, []).append(pg)
+
+    # ── M1-FIX: Pre-fetch existing label examples to avoid per-field lookups ─
+    existing_labels: set[tuple] = set()
+    if all_job_ids:
+        existing_rows = db.execute(
+            text("""
+                SELECT fax_job_id, field_key
+                FROM fax_label_example
+                WHERE fax_job_id = ANY(:job_ids)
+            """),
+            {"job_ids": all_job_ids},
+        ).fetchall()
+        for er in existing_rows:
+            existing_labels.add((er.fax_job_id, er.field_key))
+
     created_total = 0
     skipped_total = 0
+    corrections_used = 0
 
     for row in rows:
         fname = row.original_filename or ""
@@ -213,18 +265,8 @@ def process_jobs(
         if not isinstance(raw_json, dict):
             continue
 
-        # load pages for this job
-        pages = db.execute(
-            text("""
-                SELECT fax_page_id, page_number, is_cover_page,
-                       page_storage_key, preprocessed_storage_key
-                FROM fax_page
-                WHERE fax_job_id = :jid
-                ORDER BY page_number
-            """),
-            {"jid": job_id},
-        ).fetchall()
-
+        # M1-FIX: use pre-loaded pages
+        pages = pages_map.get(job_id, [])
         if not pages:
             logger.warning("Job %s has no pages — skipping", job_id)
             continue
@@ -242,14 +284,6 @@ def process_jobs(
         # determine source tag
         source_tag = "synthetic_template" if is_template else "batch3_extraction"
 
-        # check how many label_examples already exist for this job
-        existing_count = db.execute(
-            text(
-                "SELECT COUNT(*) FROM fax_label_example WHERE fax_job_id = :jid"
-            ),
-            {"jid": job_id},
-        ).scalar()
-
         job_created = 0
         job_skipped = 0
 
@@ -259,27 +293,41 @@ def process_jobs(
             if not isinstance(field_data, dict):
                 continue
 
-            value = (field_data.get("value") or "").strip()
+            # C2-FIX: Prefer human-corrected value over machine extraction
+            human_correction = corrections_map.get((job_id, field_key))
+            if human_correction:
+                value = human_correction.strip()
+                source_tag_field = "human_correction"
+                corrections_used += 1
+            else:
+                value = (field_data.get("value") or "").strip()
+                source_tag_field = source_tag
+
             if not value:
                 continue
 
-            confidence = float(field_data.get("confidence") or 0.0)
-            if confidence < min_confidence:
-                continue
-
-            method = (field_data.get("method") or "").upper()
-            if method and method not in TRUSTED_METHODS:
-                # accept if confidence is high enough even for unknown method
-                if confidence < 0.80:
+            # Only apply confidence filter for machine-extracted values
+            if not human_correction:
+                confidence = float(field_data.get("confidence") or 0.0)
+                if confidence < min_confidence:
                     continue
+
+                method = (field_data.get("method") or "").upper()
+                if method and method not in TRUSTED_METHODS:
+                    if confidence < 0.80:
+                        continue
 
             # skip clearly wrong placeholder values
             if value.upper() in {"N/A", "NONE", "NULL", "UNKNOWN", "-", ""}:
                 continue
 
-            # pick best page: most templates put all fields on page 1 content
-            # but we can refine per-field if needed
-            best_pg = _find_best_page(pages, target_page=1)
+            # pick best page — use extraction evidence page if available
+            _evidence_page = None
+            _ev_bbox = field_data.get("evidence_bbox")
+            if isinstance(_ev_bbox, dict):
+                _evidence_page = _ev_bbox.get("page")
+            target_page_num = int(_evidence_page) if _evidence_page else 1
+            best_pg = _find_best_page(pages, target_page=target_page_num)
             pg_key = best_pg.preprocessed_storage_key or best_pg.page_storage_key
 
             if not pg_key:
@@ -287,26 +335,18 @@ def process_jobs(
                 job_skipped += 1
                 continue
 
-            # check label_example doesn't already exist for this (job, field)
-            dup = db.execute(
-                text("""
-                    SELECT 1 FROM fax_label_example
-                    WHERE fax_job_id = :jid AND field_key = :fk
-                    LIMIT 1
-                """),
-                {"jid": job_id, "fk": field_key},
-            ).fetchone()
-            if dup:
+            # M1-FIX: check pre-loaded set instead of per-field DB query
+            if (job_id, field_key) in existing_labels:
                 job_skipped += 1
                 continue
 
             if dry_run:
                 logger.info(
-                    "  [DRY-RUN] Would create: job=%s field=%s value=%r conf=%.2f page=%s",
+                    "  [DRY-RUN] Would create: job=%s field=%s value=%r src=%s page=%s",
                     str(job_id)[:8],
                     field_key,
                     value,
-                    confidence,
+                    source_tag_field,
                     best_pg.page_number,
                 )
                 job_created += 1
@@ -322,7 +362,7 @@ def process_jobs(
                     page_storage_key=pg_key,
                     payer_name=payer_enum,
                     doc_type=doc_type_enum,
-                    source=source_tag,
+                    source=source_tag_field,
                     created_by="generate_training_data",
                 )
                 job_created += 1
@@ -348,6 +388,11 @@ def process_jobs(
     if not dry_run and created_total > 0:
         db.commit()
 
+    logger.info(
+        "Human corrections used: %d (out of %d available)",
+        corrections_used,
+        len(corrections_map),
+    )
     return created_total
 
 

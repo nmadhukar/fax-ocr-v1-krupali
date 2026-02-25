@@ -149,8 +149,8 @@ def store_job_metadata(ctx: PipelineContext) -> None:
         ),
         "hard_field_adjudication": ctx.adjudication_meta,
         "template_drift": ctx.template_drift_meta,
-        "cross_field_validation": ctx.cross_result.to_dict(),
-        "confidence_scoring": ctx.scoring_result.to_dict(),
+        "cross_field_validation": ctx.cross_result.to_dict() if ctx.cross_result else None,
+        "confidence_scoring": ctx.scoring_result.to_dict() if ctx.scoring_result else None,
     }
 
 
@@ -247,7 +247,7 @@ def finalize_metrics(ctx: PipelineContext) -> None:
 
     ctx.metrics.total_duration_ms = (time.perf_counter() - ctx.pipeline_start) * 1000
     ctx.metrics.total_pages = len(ctx.pages)
-    ctx.metrics.payer_detected = ctx.detected_payer.value
+    ctx.metrics.payer_detected = ctx.detected_payer.value if ctx.detected_payer else "UNKNOWN"
     ctx.metrics.payer_confidence = (
         ctx.payer_detection_meta.get("confidence", 0.0)
         if ctx.payer_detection_meta
@@ -279,7 +279,7 @@ def finalize_metrics(ctx: PipelineContext) -> None:
     )
     ctx.metrics.overall_confidence = ctx.overall_conf
     ctx.metrics.needs_review = ctx.needs_review
-    ctx.metrics.review_reasons = ctx.scoring_result.review_reasons
+    ctx.metrics.review_reasons = ctx.scoring_result.review_reasons if ctx.scoring_result else []
     ctx.metrics.final_status = ctx.job.status.value
     if ctx.ocr_quality:
         ctx.metrics.avg_ocr_confidence = ctx.ocr_quality.get("avg_token_confidence", 0.0)

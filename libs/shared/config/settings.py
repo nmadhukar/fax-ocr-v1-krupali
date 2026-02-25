@@ -17,7 +17,7 @@ class DatabaseSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="")
 
     database_url: str = Field(
-        default="postgresql+psycopg2://faxadmin:faxpass123@localhost:5432/fax_processor",
+        default="",
         alias="DATABASE_URL",
     )
     pool_size: int = Field(default=10, alias="DB_POOL_SIZE")
@@ -49,8 +49,8 @@ class MinioSettings(BaseSettings):
     # External endpoint used for presigned URLs returned to browsers.
     # In Docker, endpoint=minio:9000 (internal) but external_endpoint=localhost:9000
     external_endpoint: str | None = Field(default=None, alias="MINIO_EXTERNAL_ENDPOINT")
-    access_key: str = Field(default="minioadmin")
-    secret_key: SecretStr = Field(default="minioadmin123")
+    access_key: str = Field(default="")
+    secret_key: SecretStr = Field(default="")
     secure: bool = Field(default=False)
     bucket_name: str = Field(default="fax-documents")
     templates_bucket: str = Field(default="templates")
@@ -299,7 +299,7 @@ class SecuritySettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="")
 
     secret_key: SecretStr = Field(
-        default="your-secret-key-change-in-production", alias="SECRET_KEY"
+        default="", alias="SECRET_KEY"
     )
     encryption_key: SecretStr | None = Field(default=None, alias="ENCRYPTION_KEY")
     jwt_algorithm: str = Field(default="HS256", alias="JWT_ALGORITHM")
@@ -406,6 +406,17 @@ def get_settings() -> Settings:
             _logger.warning(
                 "SECRET_KEY is set to a default value on staging. "
                 "Consider using a unique secret for staging environments."
+            )
+        minio_secret = settings.minio.secret_key.get_secret_value()
+        if not minio_secret or minio_secret in ("minioadmin123", "minioadmin"):
+            _logger.warning(
+                "MINIO_SECRET_KEY is empty or set to a default value on staging. "
+                "Set MINIO_SECRET_KEY to a secure value."
+            )
+        if not settings.database.database_url or "faxpass123" in settings.database.database_url:
+            _logger.warning(
+                "DATABASE_URL is empty or contains default credentials on staging. "
+                "Change the database password for staging environments."
             )
 
     return settings

@@ -155,13 +155,14 @@ def init_db() -> None:
 
 def close_db() -> None:
     """
-    Close database connections.
+    Close database connections (thread-safe).
 
     Should be called on application shutdown.
     """
     global _engine, _session_factory
 
-    if _engine is not None:
-        _engine.dispose()
-        _engine = None
-        _session_factory = None
+    with _init_lock:
+        if _engine is not None:
+            _engine.dispose()
+            _engine = None
+            _session_factory = None

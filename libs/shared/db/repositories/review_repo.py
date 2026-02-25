@@ -90,6 +90,8 @@ class ReviewRepository(BaseRepository[FaxReview]):
         """
         Claim a review for a user.
 
+        Delegates to claim_review_atomic() for race-condition safety.
+
         Args:
             review_id: Review UUID.
             user_id: User claiming the review.
@@ -98,13 +100,14 @@ class ReviewRepository(BaseRepository[FaxReview]):
         Returns:
             Claimed FaxReview or None if claim failed.
         """
-        review = self.get_by_id(review_id)
-        if not review:
-            return None
-
-        if review.claim(user_id, expiry_minutes):
-            self.db.flush()
-            return review
+        success = self.claim_review_atomic(
+            review_id=review_id,
+            reviewer_id=user_id,
+            expected_claimed_by=None,
+            expiry_minutes=expiry_minutes,
+        )
+        if success:
+            return self.get_by_id(review_id)
         return None
 
     def claim_review_atomic(
@@ -214,29 +217,28 @@ class ReviewRepository(BaseRepository[FaxReview]):
 
     def release_expired_claims(self) -> int:
         """
-        Release all expired claims.
+        Release all expired claims atomically with a single bulk UPDATE.
 
         Returns:
             Number of claims released.
         """
         now = datetime.now(timezone.utc)
         stmt = (
-            select(FaxReview)
+            update(FaxReview)
             .where(
                 FaxReview.claimed_at != None,  # noqa: E711
                 FaxReview.submitted_at == None,  # noqa: E711
                 FaxReview.claim_expires_at < now,
             )
+            .values(
+                claimed_by=None,
+                claimed_at=None,
+                claim_expires_at=None,
+            )
         )
-        expired = list(self.db.execute(stmt).scalars().all())
-
-        for review in expired:
-            review.claimed_by = None
-            review.claimed_at = None
-            review.claim_expires_at = None
-
+        result = self.db.execute(stmt)
         self.db.flush()
-        return len(expired)
+        return result.rowcount
 
 
 class FeedbackRepository(BaseRepository[FaxFeedback]):

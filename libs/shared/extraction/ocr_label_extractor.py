@@ -133,6 +133,30 @@ LABEL_ALIASES: dict[str, list[str]] = {
     "next_review_date": [
         "Next Review Date",
     ],
+    "insurance_rep_name": [
+        "Approved By",
+        "Denied By",
+        "Authorized By",
+        "Reviewer Name",
+        "Reviewer",
+        "Representative",
+        "Contact Name",
+        "Utilization Review Representative",
+        "UR Representative",
+        "UM Reviewer",
+        "Care Manager",
+        "Clinical Reviewer",
+    ],
+    "insurance_rep_phone": [
+        "Reviewer Phone",
+        "Representative Phone",
+        "Contact Phone",
+        "For Questions Call",
+        "Questions Call",
+        "Contact Us",
+        "Toll Free",
+        "Call",
+    ],
 }
 
 
@@ -408,11 +432,15 @@ def _ocr_normalize(text: str) -> str:
     Only applied to alphabetic label text — NOT to values containing digits.
     PaddleOCR often confuses: O↔0, I/l↔1 in labels.
     """
+    # Pre-compute whether text has real digits (excluding '0' and '1' themselves)
+    has_other_digits = any(c.isdigit() and c not in ("0", "1") for c in text)
+    if has_other_digits:
+        return text
     result = []
     for ch in text:
-        if ch == "0" and not any(c.isdigit() for c in text if c != ch):
+        if ch == "0":
             result.append("o")
-        elif ch == "1" and not any(c.isdigit() for c in text if c != ch):
+        elif ch == "1":
             result.append("l")
         else:
             result.append(ch)
@@ -621,7 +649,7 @@ def _filter_tokens_by_field_type(
             return []
         return filtered_tokens
 
-    if field_key in ("provider_phone", "provider_fax"):
+    if field_key in ("provider_phone", "provider_fax", "insurance_rep_phone"):
         # Take only the FIRST phone-like match (reject concatenated numbers)
         for t in tokens:
             text = t.text.strip()
@@ -649,6 +677,8 @@ def _filter_tokens_by_field_type(
         "provider_phone": 25,
         "provider_fax": 25,
         "provider_npi": 15,
+        "insurance_rep_name": 60,
+        "insurance_rep_phone": 25,
     }
     max_len = _MAX_LENGTHS.get(field_key, 0)
     if max_len > 0:
@@ -862,9 +892,6 @@ def _find_field_by_label(
                 _sc_parts = []
                 for _sc_word in clean_value.split():
                     _sc_clean = _sc_word.strip("()[]{}.,;:")
-                    if re.match(r"^11[0-9]{4}$", _sc_clean):
-                        _sc_clean = "H" + _sc_clean[2:]
-                        _sc_word = _sc_clean
                     if any(c.isdigit() for c in _sc_clean) and re.match(r"^[A-Za-z0-9.\-]+$", _sc_clean) and len(_sc_clean) <= 10:
                         _sc_parts.append(_sc_word)
                     else:
@@ -872,7 +899,7 @@ def _find_field_by_label(
                 if _sc_parts:
                     clean_value = " ".join(_sc_parts)
             if clean_value:
-                confidence = max(0.40, last_tok.confidence - OCR_LABEL_CONFIDENCE_PENALTY)
+                confidence = min(1.0, max(0.40, last_tok.confidence + (OCR_LABEL_CONFIDENCE_PENALTY / 2)))
                 evidence_bbox = {
                     "x0": last_tok.x0, "y0": last_tok.y0,
                     "x1": last_tok.x1, "y1": last_tok.y1,
@@ -1057,10 +1084,6 @@ def _find_field_by_label(
         code_parts = []
         for part in parts:
             clean = part.strip("()[]{}.,;:")
-            # OCR correction: "112036" → "H2036"
-            if re.match(r"^11[0-9]{4}$", clean):
-                clean = "H" + clean[2:]
-                part = clean
             has_digit = any(c.isdigit() for c in clean)
             is_code_like = bool(re.match(r"^[A-Za-z0-9.\-]+$", clean)) and len(clean) <= 10
             if has_digit and is_code_like:
@@ -1074,7 +1097,7 @@ def _find_field_by_label(
 
     # Confidence = average OCR confidence * penalty for being heuristic
     avg_conf = sum(t.confidence for t in value_tokens) / len(value_tokens)
-    confidence = max(0.40, avg_conf - OCR_LABEL_CONFIDENCE_PENALTY)
+    confidence = min(1.0, max(0.40, avg_conf + (OCR_LABEL_CONFIDENCE_PENALTY / 2)))
 
     # Evidence bounding box (union of value tokens)
     evidence_bbox = {

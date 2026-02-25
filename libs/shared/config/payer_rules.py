@@ -221,7 +221,7 @@ class PayerRulesLoader:
                 try:
                     expiration = self._parse_date(value, validation.format)
                     effective = self._parse_date(effective_date_str, validation.format)
-                    if expiration and effective and expiration <= effective:
+                    if expiration and effective and expiration < effective:
                         errors.append(
                             f"Field '{field_key}' must be after effective date"
                         )

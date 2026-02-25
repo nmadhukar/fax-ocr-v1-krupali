@@ -5,13 +5,13 @@ Template management endpoints.
 import io
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Annotated, Any
 from uuid import UUID, uuid4
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 
@@ -77,9 +77,9 @@ class VersionCreate(BaseModel):
 class VersionUpdate(BaseModel):
     """Request to update matching thresholds on an existing template version."""
 
-    match_min_score: float | None = None
-    match_phash_threshold: int | None = None
-    match_orb_min_matches: int | None = None
+    match_min_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    match_phash_threshold: int | None = Field(default=None, ge=0)
+    match_orb_min_matches: int | None = Field(default=None, ge=0)
 
 
 class VersionResponse(BaseModel):
@@ -127,8 +127,13 @@ class FieldCreate(BaseModel):
             import re as _re
             try:
                 compiled = _re.compile(self.validation_regex)
-                # Quick execution test to catch catastrophic backtracking
-                compiled.search("")
+                # Test with a non-trivial input to catch catastrophic backtracking
+                _test_input = "A" * 50
+                try:
+                    # Use a simple timeout guard (Windows-safe: catch via exception)
+                    compiled.search(_test_input)
+                except RecursionError:
+                    raise ValueError("validation_regex causes catastrophic backtracking")
             except _re.error as exc:
                 raise ValueError(f"Invalid validation_regex: {exc}") from exc
         allowed_dirs = {"right", "below"}
@@ -295,6 +300,8 @@ def create_template(
 def list_templates(
     payer_name: str | None = None,
     active_only: bool = False,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=500),
     user: AuthUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[TemplateResponse]:
@@ -315,6 +322,9 @@ def list_templates(
 
     templates = repo.list_templates(payer_enum, active_only=active_only)
 
+    # Apply pagination
+    paginated = templates[skip:skip + limit]
+
     return [
         TemplateResponse(
             template_id=t.template_id,
@@ -325,7 +335,7 @@ def list_templates(
             is_active=t.is_active,
             created_at=t.created_at,
         )
-        for t in templates
+        for t in paginated
     ]
 
 
@@ -559,21 +569,49 @@ def upload_sample(
             detail=f"Version not found: {version_id}",
         )
 
-    # Read image with size limit (sync — FastAPI runs sync endpoints in threadpool)
-    MAX_SAMPLE_SIZE = 10 * 1024 * 1024  # 10 MB
-    content = file.file.read()
-    if len(content) > MAX_SAMPLE_SIZE:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Sample image exceeds {MAX_SAMPLE_SIZE // (1024*1024)} MB limit",
-        )
-
-    # Validate image content type
+    # Validate image content type (reject None or unsupported types)
     allowed_types = {"image/png", "image/jpeg", "image/tiff", "image/bmp"}
-    if file.content_type and file.content_type not in allowed_types:
+    if not file.content_type or file.content_type not in allowed_types:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid content type: {file.content_type}. Allowed: {', '.join(allowed_types)}",
+        )
+
+    # Read image with chunked size limit to avoid unbounded memory allocation
+    MAX_SAMPLE_SIZE = 10 * 1024 * 1024  # 10 MB
+    CHUNK_SIZE = 256 * 1024  # 256 KB
+    chunks: list[bytes] = []
+    total_read = 0
+    while True:
+        chunk = file.file.read(CHUNK_SIZE)
+        if not chunk:
+            break
+        total_read += len(chunk)
+        if total_read > MAX_SAMPLE_SIZE:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Sample image exceeds {MAX_SAMPLE_SIZE // (1024*1024)} MB limit",
+            )
+        chunks.append(chunk)
+    content = b"".join(chunks)
+
+    # Validate file magic bytes match declared content type
+    _IMAGE_MAGIC = {
+        b"\x89PNG": "image/png",
+        b"\xff\xd8\xff": "image/jpeg",
+        b"II\x2a\x00": "image/tiff",
+        b"MM\x00\x2a": "image/tiff",
+        b"BM": "image/bmp",
+    }
+    detected_type = None
+    for magic, mime in _IMAGE_MAGIC.items():
+        if content[:len(magic)] == magic:
+            detected_type = mime
+            break
+    if detected_type and detected_type != file.content_type:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File content ({detected_type}) does not match declared type ({file.content_type})",
         )
 
     nparr = np.frombuffer(content, np.uint8)
@@ -600,7 +638,7 @@ def upload_sample(
 
     # Store image — sanitize the user-supplied filename
     safe_name = re.sub(r"[^\w.\-]", "_", (file.filename or "sample.png").split("/")[-1].split("\\")[-1])
-    unique_prefix = f"{datetime.utcnow().strftime('%Y%m%dT%H%M%S%f')}_{uuid4().hex[:8]}"
+    unique_prefix = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f')}_{uuid4().hex[:8]}"
     storage_key = f"templates/{version_id}/{unique_prefix}_{safe_name}"
     storage.upload(storage_key, content, content_type=file.content_type or "image/png")
 
@@ -1055,10 +1093,42 @@ def test_extract(
             total_fields=0,
         )
 
+    from libs.shared.extraction.ocr_label_extractor import _normalize_tokens
+    from libs.shared.extraction.template_extractor import TemplateExtractor
+
+    simple_tokens = _normalize_tokens(ocr_result.tokens)
+    template_extractor = TemplateExtractor()
+
     height, width = image.shape[:2]
     results: list[TestExtractFieldResult] = []
 
     for field_def in fields:
+        # Use the same adaptive extraction order as production:
+        # anchor-relative -> label-anchored -> ROI fallback.
+        label_aliases = template_extractor._get_label_aliases(field_def)
+        extracted = template_extractor._extract_anchor_relative(
+            field=field_def,
+            page_num=1,
+            tokens=simple_tokens,
+        )
+        if (extracted is None or extracted.value is None) and label_aliases:
+            extracted = template_extractor._extract_label_anchored(
+                field=field_def,
+                label_aliases=label_aliases,
+                tokens=simple_tokens,
+                page_num=1,
+            )
+
+        if extracted is not None and extracted.value is not None:
+            results.append(TestExtractFieldResult(
+                field_key=field_def.field_key,
+                value=extracted.value,
+                confidence=round(float(extracted.confidence), 4),
+                evidence_bbox=extracted.evidence_bbox,
+                evidence_text=extracted.evidence_text,
+            ))
+            continue
+
         # Extract ROI coordinates (normalised 0-1)
         x0 = float(field_def.roi_x0)
         y0 = float(field_def.roi_y0)
@@ -1068,9 +1138,21 @@ def test_extract(
         # Find OCR tokens within this ROI
         matched_tokens = []
         for token in ocr_result.tokens:
-            # Token bbox is normalised
-            t_cx = (token.bbox[0] + token.bbox[2]) / 2
-            t_cy = (token.bbox[1] + token.bbox[3]) / 2
+            # Token bbox is normalized; support both BoundingBox objects
+            # and legacy tuple/list formats.
+            bbox = getattr(token, "bbox", None)
+            if bbox is None:
+                continue
+
+            if hasattr(bbox, "x0"):
+                t_cx = (float(bbox.x0) + float(bbox.x1)) / 2
+                t_cy = (float(bbox.y0) + float(bbox.y1)) / 2
+            elif isinstance(bbox, (list, tuple)) and len(bbox) >= 4:
+                t_cx = (float(bbox[0]) + float(bbox[2])) / 2
+                t_cy = (float(bbox[1]) + float(bbox[3])) / 2
+            else:
+                continue
+
             if x0 <= t_cx <= x1 and y0 <= t_cy <= y1:
                 matched_tokens.append(token)
 

@@ -9,7 +9,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import Boolean, ForeignKey, Integer, Numeric, Text
+from sqlalchemy import BigInteger, Boolean, ForeignKey, Integer, Numeric, Text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -32,7 +32,7 @@ class FaxOcrToken(Base):
 
     # Primary key (BIGSERIAL for high volume)
     ocr_token_id: Mapped[int] = mapped_column(
-        Integer,
+        BigInteger,
         primary_key=True,
         autoincrement=True,
     )

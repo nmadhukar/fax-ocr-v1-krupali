@@ -118,7 +118,7 @@ def test_hard_field_adjudication_adds_candidate():
     extraction_stage.hard_field_adjudication(ctx)
 
     methods = [c.method for c in ctx.candidates_by_field["provider_name"]]
-    assert ExtractionMethodEnum.LLM in methods
+    assert ExtractionMethodEnum.HYBRID in methods
     assert ctx.field_repo.upserts == 1
 
 

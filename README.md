@@ -22,7 +22,7 @@ Healthcare faxes arrive as PDFs of varying quality. This system processes them a
 
 **Supported payers:** Anthem, CareSource, Molina, Buckeye, Humana, UnitedHealthcare, AmeriHealth, Aetna, Paramount, ProMedica
 
-**Extracted fields per document:** member ID, prior auth number, patient name, date of birth, auth effective and expiration dates, next review date, provider name, provider NPI, provider phone/fax, service code, units requested, diagnosis code, decision
+**Extracted fields per document:** payer name (SYSTEM), member ID, patient name, date of birth, auth effective and expiration dates, next review date, provider name, provider NPI, provider phone/fax, service code, units requested, diagnosis code, decision, insurance rep name, insurance rep phone, fax received date (SYSTEM)
 
 **Test results:**
 - Batch 3 (7 PDFs): 41/41 fields correct, average confidence 0.803
@@ -166,18 +166,23 @@ Response:
   "overall_confidence": 0.91,
   "needs_review": false,
   "fields": {
-    "patient_name":         { "value": "Jane Doe",     "confidence": 0.97, "source": "TEMPLATE_OCR", "not_present": false },
-    "member_id":            { "value": "MBR001234",    "confidence": 0.98, "source": "HYBRID",        "not_present": false },
-    "prior_auth_number":    { "value": "PA-00123",     "confidence": 0.90, "source": "TEMPLATE_OCR", "not_present": false },
-    "auth_effective_date":  { "value": "08/07/2025",   "confidence": 1.00, "source": "HYBRID",        "not_present": false },
-    "auth_expiration_date": { "value": "09/05/2025",   "confidence": 1.00, "source": "HYBRID",        "not_present": false },
-    "decision":             { "value": "APPROVED",     "confidence": 0.90, "source": "TEMPLATE_OCR", "not_present": false },
-    "units_requested":      { "value": null,            "confidence": 0.00, "source": "HYBRID",        "not_present": true  }
+    "payer_name":            { "value": "ANTHEM",        "confidence": 1.00, "source": "SYSTEM",       "not_present": false },
+    "patient_name":          { "value": "Jane Doe",      "confidence": 0.97, "source": "TEMPLATE_OCR", "not_present": false },
+    "member_id":             { "value": "MBR001234",     "confidence": 0.98, "source": "HYBRID",       "not_present": false },
+    "prior_auth_number":     { "value": "PA-00123",      "confidence": 0.90, "source": "TEMPLATE_OCR", "not_present": false },
+    "decision":              { "value": "APPROVED",      "confidence": 0.90, "source": "TEMPLATE_OCR", "not_present": false },
+    "service_code":          { "value": "H2034",         "confidence": 0.85, "source": "TEMPLATE_OCR", "not_present": false },
+    "units_requested":       { "value": "40",            "confidence": 0.80, "source": "OCR_LABEL",    "not_present": false },
+    "auth_effective_date":   { "value": "08/07/2025",    "confidence": 1.00, "source": "HYBRID",       "not_present": false },
+    "auth_expiration_date":  { "value": "09/05/2025",    "confidence": 1.00, "source": "HYBRID",       "not_present": false },
+    "insurance_rep_name":    { "value": "Sarah Johnson", "confidence": 0.75, "source": "OCR_LABEL",    "not_present": false },
+    "insurance_rep_phone":   { "value": "800-555-1234",  "confidence": 0.70, "source": "OCR_LABEL",    "not_present": false },
+    "fax_received_date":     { "value": "02/25/2026 09:30", "confidence": 1.00, "source": "SYSTEM",    "not_present": false }
   },
   "summary": {
-    "total_fields": 14,
-    "fields_found": 13,
-    "fields_not_present": 1,
+    "total_fields": 18,
+    "fields_found": 18,
+    "fields_not_present": 0,
     "fields_flagged_for_review": 0,
     "flagged_field_keys": []
   }
@@ -188,9 +193,13 @@ Field `source` values:
 | Value | Meaning |
 |---|---|
 | `TEMPLATE_OCR` | Extracted using label-anchored template matching |
+| `OCR_LABEL` | Found by scanning OCR text for field labels |
 | `LAYOUTLM` | Extracted by LayoutLM Document QA model |
+| `DONUT` | Extracted by Donut end-to-end model |
 | `HYBRID` | Multiple sources agreed; highest confidence used |
 | `HUMAN_REVIEW` | Corrected by a human reviewer (authoritative) |
+| `HUMAN` | Manually entered by a human operator |
+| `SYSTEM` | Metadata-sourced field (payer name, fax received date) — not OCR-extracted |
 
 #### Get raw OCR tokens
 
@@ -313,7 +322,7 @@ fax_ocr/
 +-- requirements.txt
 |
 +-- infra/
-|   +-- migrations/                 001 through 009 — run in order
+|   +-- migrations/                 001 through 014 — run in order
 |
 +-- services/
 |   +-- fax_ingress_api/            Upload and query API  (port 8001)
@@ -330,7 +339,8 @@ fax_ocr/
 |   +-- template/                   pHash matching, anchor scoring
 |   +-- extraction/                 Template extractor, OCR label extractor,
 |   |                               LayoutLM extractor, field builder,
-|   |                               HITL flagging, output formatter
+|   |                               HITL flagging, output formatter,
+|   |                               constants.py (canonical CRITICAL_FIELDS)
 |   +-- vlm/                        LayoutLM client and base interfaces
 |   +-- classification/             Document type and cover page detection
 |   +-- monitoring/                 Pipeline metrics, mismatch alerts
@@ -340,6 +350,7 @@ fax_ocr/
 |   +-- seed_templates.py           Load payer templates into DB (run once)
 |   +-- generate_training_data.py   Build LayoutLM training set from DB
 |   +-- finetune_layoutlm.py        Fine-tune LayoutLM on labeled examples
+|   +-- train_candidate_ranker.py   Train HITL-based candidate ranker model
 |   +-- export_training_data.py     Export training data to disk
 |   +-- do_upload.py                Helper: upload a PDF via the API
 |   +-- start_services.ps1          Start all services (Windows PowerShell)
@@ -371,13 +382,13 @@ All settings are controlled via environment variables or a `.env` file in the pr
 
 | Variable | Description | Default |
 |---|---|---|
-| `DATABASE_URL` | PostgreSQL connection string | `postgresql+psycopg2://faxadmin:faxpass123@127.0.0.1:5432/fax_processor` |
+| `DATABASE_URL` | PostgreSQL connection string | — (**required**, no default) |
 | `REDIS_URL` | Redis URL | `redis://127.0.0.1:6379/0` |
 | `CELERY_BROKER_URL` | Celery broker | `redis://127.0.0.1:6379/0` |
 | `MINIO_ENDPOINT` | MinIO host:port | `127.0.0.1:9000` |
-| `MINIO_ACCESS_KEY` | MinIO access key | `minioadmin` |
-| `MINIO_SECRET_KEY` | MinIO secret key | `minioadmin123` |
-| `SECRET_KEY` | JWT signing key | — (required in production) |
+| `MINIO_ACCESS_KEY` | MinIO access key | — (**required**, no default) |
+| `MINIO_SECRET_KEY` | MinIO secret key | — (**required**, no default) |
+| `SECRET_KEY` | JWT signing key | — (**required**, no default) |
 
 ### Processing settings
 
@@ -409,7 +420,7 @@ All settings are controlled via environment variables or a `.env` file in the pr
 | `HITL_CRITICAL_THRESHOLD` | Higher threshold for critical fields | `0.85` |
 | `HITL_MIN_FLAGS_FOR_REVIEW` | Number of flags that triggers NEEDS_REVIEW | `1` |
 
-Critical fields (patient_name, member_id, auth dates, decision, service_code, diagnosis_code) use the higher threshold. All other fields use the default threshold.
+Critical fields (patient_name, patient_dob, member_id, prior_auth_number, auth_effective_date, auth_expiration_date, decision, service_code, diagnosis_codes) use the higher threshold. The canonical set of 9 critical fields is defined in `libs/shared/extraction/constants.py` and imported by all modules. All other fields use the default threshold.
 
 ### Security settings (production)
 
@@ -433,8 +444,9 @@ When a processed document has fields below the confidence threshold, the job sta
 3. Review each flagged field against the document image
 4. Call `POST /v1/faxes/{id}/review/submit` with any corrections
 
-Corrections are applied with full confidence and recorded as training examples. When enough corrections accumulate (`RETRAIN_MIN_NEW_LABELS`, default 20), the weekly retraining task fine-tunes the LayoutLM adapter, which is then registered as a new model version and can be promoted to production.
-The same weekly loop can also retrain the candidate ranker (`scripts/train_candidate_ranker.py`) from HITL corrections.
+Corrections are applied with full confidence and recorded as training examples. When enough corrections accumulate (`RETRAIN_MIN_NEW_LABELS`, default 20), the weekly retraining task fine-tunes the LayoutLM adapter, which is then registered as a new model version. The new adapter is only auto-promoted if its evaluation accuracy meets the minimum threshold (`RETRAIN_MIN_PROMOTE_ACCURACY`, default 0.70); otherwise it is registered but left inactive for manual review.
+
+The same weekly loop can also retrain the candidate ranker (`scripts/train_candidate_ranker.py`) from HITL corrections. The ranker training uses a configurable lookback window (`--lookback-days`, default 90) to limit training data to recent corrections, preventing stale feedback from degrading quality.
 
 ---
 
@@ -489,6 +501,10 @@ Migrations are plain SQL files in `infra/migrations/` and must be run in order. 
 | 007_model_version.sql | Model version registry |
 | 008_template_config.sql | Template configuration columns |
 | 009_hitl_flagged_fields.sql | HITL flagged_fields column on fax_extraction |
+| 010_add_dedup_constraint.sql | Deduplication constraint on fax_job |
+| 012_label_example_unique_constraint.sql | Unique constraint on fax_label_example (job + page + field) |
+| 013_partial_unique_active_version.sql | Partial unique index ensuring one active version per template |
+| 014_bigint_pk_columns.sql | Upgrade high-volume PKs (ocr_token, audit_log) to BIGINT |
 
 ---
 
@@ -505,14 +521,11 @@ Migrations are plain SQL files in `infra/migrations/` and must be run in order. 
 
 ---
 
-## Default Credentials
+## Credential Configuration
 
-Change all of these before any deployment outside a local development machine.
+**All credentials must be explicitly configured.** There are no default passwords — `DATABASE_URL`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, and `SECRET_KEY` all default to empty strings and will fail validation if not set.
 
-| Service | Username | Password |
-|---|---|---|
-| PostgreSQL | faxadmin | faxpass123 |
-| MinIO | minioadmin | minioadmin123 |
+Configure credentials in your `.env` or `.env.docker` file before first use. The application validates credentials at startup and raises an error in staging/production environments if any credential is empty or set to an insecure value.
 
 ---
 
@@ -520,10 +533,11 @@ Change all of these before any deployment outside a local development machine.
 
 - JWT authentication is required on all API endpoints.
 - Every access to patient data is written to the `audit_log` table (HIPAA requirement).
-- Tenant isolation is enforced at the repository layer — users cannot query another tenant's jobs.
-- File uploads are validated for type, size, and content before processing.
+- Tenant isolation is **always enforced** at the repository layer regardless of environment — users cannot query another tenant's jobs.
+- File uploads are validated for type, size, magic bytes, and content before processing.
 - Security headers (HSTS, X-Content-Type-Options, X-Frame-Options, CSP) are set on all responses.
-- Default credentials cause a startup error in production mode.
+- Empty or insecure credentials cause a startup error in staging and production environments.
+- The development-mode bypass user has `reviewer` role (not admin), limiting what can be done without explicit authentication.
 
 ---
 

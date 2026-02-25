@@ -613,13 +613,14 @@ def main():
 
     # upload adapter to MinIO
     try:
-        os.environ.setdefault(
-            "DATABASE_URL",
-            "postgresql+psycopg2://faxadmin:faxpass123@127.0.0.1:5432/fax_processor",
-        )
-        os.environ.setdefault("MINIO_ENDPOINT", "127.0.0.1:9000")
-        os.environ.setdefault("MINIO_ACCESS_KEY", "minioadmin")
-        os.environ.setdefault("MINIO_SECRET_KEY", "minioadmin123")
+        _REQUIRED_UPLOAD_ENV = ["DATABASE_URL", "MINIO_ENDPOINT", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY"]
+        _upload_missing = [v for v in _REQUIRED_UPLOAD_ENV if not os.environ.get(v)]
+        if _upload_missing:
+            logger.warning(
+                "Skipping MinIO upload: required env vars not set: %s",
+                ", ".join(_upload_missing),
+            )
+            return
 
         from libs.shared.storage.s3_adapter import S3StorageAdapter
 

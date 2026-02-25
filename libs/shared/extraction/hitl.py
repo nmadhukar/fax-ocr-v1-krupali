@@ -15,6 +15,8 @@ import copy
 import logging
 from typing import Any
 
+from libs.shared.extraction.constants import CRITICAL_FIELDS
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -26,18 +28,8 @@ logger = logging.getLogger(__name__)
 _CRITICAL_THRESHOLD = 0.85   # critical clinical fields
 _DEFAULT_THRESHOLD = 0.75    # all other fields
 
-# Critical fields: wrong value has direct patient-safety / billing impact
-_CRITICAL_FIELDS = {
-    "patient_name",
-    "patient_dob",
-    "member_id",
-    "prior_auth_number",
-    "auth_effective_date",
-    "auth_expiration_date",
-    "decision",
-    "service_code",
-    "diagnosis_codes",
-}
+# Critical fields imported from the single source of truth
+_CRITICAL_FIELDS = CRITICAL_FIELDS
 
 # Per-field threshold table (everything not listed uses _DEFAULT_THRESHOLD)
 FIELD_REVIEW_THRESHOLDS: dict[str, float] = {

@@ -41,25 +41,29 @@ The Healthcare Fax OCR Processing System automatically:
 
 ### What the System Extracts
 
-The system extracts up to 15 fields from each fax document:
+The system extracts up to 18 fields from each fax document:
 
-| Field | Description | Example |
-|-------|-------------|---------|
-| `member_id` | Insurance member identifier | MBR001234 |
-| `prior_auth_number` | Prior authorization reference | PA-00123 |
-| `patient_name` | Patient full name | Jane Doe |
-| `patient_dob` | Patient date of birth | 01/15/1985 |
-| `auth_effective_date` | Authorization start date | 01/15/2025 |
-| `auth_expiration_date` | Authorization end date | 03/15/2025 |
-| `next_review_date` | Next review date | 02/15/2025 |
-| `provider_name` | Provider/physician name | Dr. John Smith |
-| `provider_npi` | National Provider Identifier | 1234567890 |
-| `provider_phone` | Provider phone number | (614) 555-1234 |
-| `provider_fax` | Provider fax number | (614) 555-5678 |
-| `service_code` | CPT/HCPCS procedure code | 99213 |
-| `diagnosis_code` | ICD-10 diagnosis code | F32.1 |
-| `units_requested` | Number of units authorized | 10 |
-| `decision` | Authorization decision | APPROVED / DENIED |
+| Field | Description | Example | Source |
+|-------|-------------|---------|--------|
+| `payer_name` | Insurance company name | HUMANA | SYSTEM (from payer detection) |
+| `member_id` | Insurance member identifier | MBR001234 | OCR extraction |
+| `patient_name` | Patient/member full name | Jane Doe | OCR extraction |
+| `patient_dob` | Patient date of birth | 01/15/1985 | OCR extraction |
+| `decision` | Authorization decision | APPROVED / DENIED | OCR extraction |
+| `prior_auth_number` | Prior authorization reference | PA-00123 | OCR extraction |
+| `service_code` | CPT/HCPCS procedure code | H2034 | OCR extraction |
+| `units_requested` | Number of units authorized | 40 | OCR extraction |
+| `auth_effective_date` | Authorization start date (From Date) | 01/15/2025 | OCR extraction |
+| `auth_expiration_date` | Authorization end date (To Date) | 03/15/2025 | OCR extraction |
+| `insurance_rep_name` | Insurance representative who approved/denied | Sarah Johnson | OCR extraction |
+| `insurance_rep_phone` | Insurance representative contact number | 800-555-1234 | OCR extraction |
+| `fax_received_date` | Date and time the fax was received | 02/25/2026 09:30 | SYSTEM (from job timestamp) |
+| `next_review_date` | Next review date | 02/15/2025 | OCR extraction |
+| `provider_name` | Provider/physician name | Dr. John Smith | OCR extraction |
+| `provider_npi` | National Provider Identifier | 1234567890 | OCR extraction |
+| `provider_phone` | Provider phone number | (614) 555-1234 | OCR extraction |
+| `provider_fax` | Provider fax number | (614) 555-5678 | OCR extraction |
+| `diagnosis_codes` | ICD-10 diagnosis code | F32.1 | OCR extraction |
 
 ---
 
@@ -301,9 +305,12 @@ Each field in the results has four properties:
 | Source | Description | Typical Confidence |
 |--------|-------------|-------------------|
 | `TEMPLATE_OCR` | Extracted from a known template region | 0.85–0.99 |
+| `OCR_LABEL` | Found by scanning OCR text for field labels | 0.70–0.95 |
 | `LAYOUTLM` | Extracted by AI document understanding model | 0.60–0.90 |
 | `HYBRID` | Multiple methods agreed on the same value | 0.90–1.00 |
+| `DONUT` | Extracted by Donut end-to-end model | 0.60–0.90 |
 | `HUMAN_REVIEW` | Corrected by a human reviewer | 1.00 |
+| `HUMAN` | Manually entered by a human operator | 1.00 |
 | `VLM` | Vision-language model extraction | 0.50–0.85 |
 
 ### Summary Section
@@ -537,28 +544,28 @@ curl -X POST http://your-server:8003/v1/query \
 
 ### Critical Fields
 
-These fields are held to higher confidence thresholds and are always flagged if missing or low-confidence:
+The canonical set of **9 critical fields** is defined in `libs/shared/extraction/constants.py` and imported by all modules. These fields are held to higher confidence thresholds and are always flagged if missing or low-confidence:
 
 | Field | Confidence Threshold | Format |
 |-------|---------------------|--------|
+| `patient_name` | 0.85 | Free text |
+| `patient_dob` | 0.85 | Date (must be in the past, today allowed for newborns) |
 | `member_id` | 0.85–0.90 (payer-specific) | Alphanumeric, payer-specific regex |
 | `prior_auth_number` | 0.85 | Alphanumeric, 6-15 characters |
-| `auth_effective_date` | 0.80 | Date (MM/DD/YYYY or YYYY-MM-DD) |
-| `auth_expiration_date` | 0.80 | Date (must be after effective date) |
+| `auth_effective_date` | 0.85 | Date (MM/DD/YYYY or YYYY-MM-DD) |
+| `auth_expiration_date` | 0.85 | Date (must be on or after effective date) |
 | `decision` | 0.85 | APPROVED, DENIED, or PENDING |
+| `service_code` | 0.85 | 5 digits (CPT) or letter+4 digits (HCPCS) |
+| `diagnosis_codes` | 0.85 | ICD-10: letter+2 digits[.extension] |
 
 ### Non-Critical Fields
 
 | Field | Confidence Threshold | Format |
 |-------|---------------------|--------|
-| `patient_name` | 0.75 | Free text |
-| `patient_dob` | 0.75 | Date (must be in the past) |
 | `provider_name` | 0.75 | Free text |
 | `provider_npi` | 0.75 | 10 digits (Luhn check) |
 | `provider_phone` | 0.75 | 10 digits |
-| `provider_fax` | 0.75 | 10 digits |
-| `service_code` | 0.75 | 5 digits (CPT) or letter+4 digits (HCPCS) |
-| `diagnosis_code` | 0.75 | ICD-10: letter+2 digits[.extension] |
+| `provider_fax` | 0.75 | 10 digits (phone format) |
 | `units_requested` | 0.75 | Number |
 | `next_review_date` | 0.75 | Date |
 

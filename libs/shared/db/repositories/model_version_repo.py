@@ -5,7 +5,7 @@ Repository for model version tracking.
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from libs.shared.db.models.model_version import ModelVersion
@@ -46,6 +46,10 @@ class ModelVersionRepository(BaseRepository[ModelVersion]):
         """
         Promote a version to active (deactivates others of same type).
 
+        C3-FIX: Uses SELECT FOR UPDATE to lock the target row, preventing
+        concurrent promotions from creating two active versions.  Deactivation
+        is done via a single UPDATE statement for atomicity.
+
         Args:
             model_version_id: Version to promote.
             promoted_by: Who is promoting.
@@ -53,14 +57,25 @@ class ModelVersionRepository(BaseRepository[ModelVersion]):
         Returns:
             Promoted ModelVersion or None if not found.
         """
-        version = self.get_by_id(model_version_id)
+        # Lock the target version row to prevent concurrent promote()
+        stmt = (
+            select(ModelVersion)
+            .where(ModelVersion.model_version_id == model_version_id)
+            .with_for_update()
+        )
+        version = self.db.execute(stmt).scalar_one_or_none()
         if not version:
             return None
 
-        # Deactivate all versions of same type
-        siblings = self.get_by_type(version.model_type)
-        for sibling in siblings:
-            sibling.is_active = False
+        # Atomically deactivate all siblings of the same model_type
+        self.db.execute(
+            update(ModelVersion)
+            .where(
+                ModelVersion.model_type == version.model_type,
+                ModelVersion.is_active == True,
+            )
+            .values(is_active=False)
+        )
 
         # Activate this version
         version.is_active = True

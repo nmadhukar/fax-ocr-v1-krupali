@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile, status
 from fastapi.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
@@ -201,7 +201,8 @@ def _maybe_requeue_existing(existing: FaxJob) -> None:
 def upload_fax(
     request: Request,
     file: Annotated[UploadFile, File(description="Fax file (PDF, TIFF, or image)")],
-    tenant_id: Annotated[str, Form(description="Tenant identifier")],
+    tenant_id: Annotated[str | None, Form(description="Tenant identifier")] = None,
+    x_tenant_id: Annotated[str | None, Header(alias="X-Tenant-ID")] = None,
     payer_hint: Annotated[str | None, Form(description="Optional payer hint")] = None,
     external_fax_id: Annotated[str | None, Form(description="Optional external reference")] = None,
     user: AuthUser = Depends(get_current_user),
@@ -215,13 +216,19 @@ def upload_fax(
     MinIO and queued for OCR processing.
     """
     settings = get_settings()
+    resolved_tenant_id = tenant_id or x_tenant_id or user.tenant_id
+    if not resolved_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="tenant_id is required (form field or X-Tenant-ID header)",
+        )
 
     # Rate limiting
     rate_limiter = get_upload_rate_limiter()
     rate_limiter.check(request)
 
     # Tenant isolation: authenticated user's tenant must match
-    if settings.environment != "development" and user.tenant_id != tenant_id:
+    if settings.environment != "development" and user.tenant_id != resolved_tenant_id:
         if not user.is_admin:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -265,14 +272,14 @@ def upload_fax(
 
     # Check for duplicate
     repo = FaxJobRepository(db)
-    existing = repo.get_by_sha256(file_hash, tenant_id=tenant_id)
+    existing = repo.get_by_sha256(file_hash, tenant_id=resolved_tenant_id)
     if existing:
         _maybe_requeue_existing(existing)
         return _build_duplicate_response(existing)
 
     # Generate storage key
     timestamp = datetime.now(timezone.utc).strftime("%Y/%m/%d")
-    storage_key = f"{tenant_id}/{timestamp}/{file_hash[:8]}_{filename}"
+    storage_key = f"{resolved_tenant_id}/{timestamp}/{file_hash[:8]}_{filename}"
 
     # Upload to storage
     try:
@@ -281,7 +288,7 @@ def upload_fax(
             data=content,
             content_type=content_type,
             metadata={
-                "tenant_id": tenant_id,
+                "tenant_id": resolved_tenant_id,
                 "original_filename": filename,
             },
         )
@@ -302,7 +309,7 @@ def upload_fax(
 
     # Create fax job
     fax_job = FaxJob(
-        tenant_id=tenant_id,
+        tenant_id=resolved_tenant_id,
         original_filename=filename,
         file_storage_key=storage_key,
         file_sha256=file_hash,
@@ -317,7 +324,7 @@ def upload_fax(
         db.commit()
     except IntegrityError:
         db.rollback()
-        existing = repo.get_by_sha256(file_hash, tenant_id=tenant_id)
+        existing = repo.get_by_sha256(file_hash, tenant_id=resolved_tenant_id)
         if existing:
             logger.info(
                 "Duplicate detected at commit-time for sha256=%s...; returning existing job %s",
@@ -366,7 +373,7 @@ def upload_fax(
         from workers.fax_processing_worker.celery_app import app as celery_app
         result = celery_app.send_task(
             "workers.fax_processing_worker.tasks.process_fax.process_fax_task",
-            args=[str(fax_job.fax_job_id), tenant_id],
+            args=[str(fax_job.fax_job_id), resolved_tenant_id],
             queue="fax_processing",
         )
         logger.info("Processing task queued for job %s, task_id=%s", fax_job.fax_job_id, result.id)
@@ -430,7 +437,7 @@ def get_fax_job(
         total_pages=job.total_pages,
         payer_hint=job.payer_hint.value if job.payer_hint else None,
         doc_type=job.doc_type.value if job.doc_type else None,
-        overall_conf=float(job.overall_conf) if job.overall_conf else None,
+        overall_conf=float(job.overall_conf) if job.overall_conf is not None else None,
         needs_review=job.needs_review,
         created_at=job.created_at,
         processing_started_at=job.processing_started_at,
@@ -503,9 +510,14 @@ def get_fax_results(
         "payer": job.payer_hint.value if job.payer_hint else None,
         "doc_type": job.doc_type.value if job.doc_type else None,
         "status": job.status.value,
-        "overall_confidence": float(job.overall_conf) if job.overall_conf else None,
+        "overall_confidence": float(job.overall_conf) if job.overall_conf is not None else None,
         "needs_review": job.needs_review,
-        **format_summary(extraction.extraction_json, flagged_fields),
+        **format_summary(
+            extraction.extraction_json,
+            flagged_fields,
+            payer_name=job.payer_hint.value if job.payer_hint else None,
+            fax_received_date=job.created_at.strftime("%m/%d/%Y %H:%M") if job.created_at else None,
+        ),
     }
 
 
@@ -625,7 +637,7 @@ def list_faxes(
                 total_pages=job.total_pages,
                 payer_hint=job.payer_hint.value if job.payer_hint else None,
                 doc_type=job.doc_type.value if job.doc_type else None,
-                overall_conf=float(job.overall_conf) if job.overall_conf else None,
+                overall_conf=float(job.overall_conf) if job.overall_conf is not None else None,
                 needs_review=job.needs_review,
                 created_at=job.created_at,
                 processing_started_at=job.processing_started_at,

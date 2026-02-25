@@ -5,7 +5,7 @@ This file defines the project-level rules and execution workflow for any coding 
 ## 1) Global Rules
 
 1. Keep tenant isolation intact.
-   - Cross-tenant access must remain blocked whenever `ENVIRONMENT != development`.
+   - Cross-tenant access must remain blocked **in all environments** (tenant isolation is always enforced regardless of `ENVIRONMENT`).
 2. Preserve dedup behavior on upload.
    - Dedup identity is `(tenant_id, file_sha256)`.
    - Duplicate upload must return the existing job, not create a new one.

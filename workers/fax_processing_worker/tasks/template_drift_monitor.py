@@ -13,10 +13,15 @@ from datetime import datetime, timedelta, timezone
 
 from celery import shared_task
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from libs.shared.config import get_settings
 from libs.shared.db.models.audit_log import AuditAction, AuditLog
-from libs.shared.db.models.fax_template import FaxTemplateField, FaxTemplateVersion
+from libs.shared.db.models.fax_template import (
+    FaxTemplateSample,
+    FaxTemplateField,
+    FaxTemplateVersion,
+)
 from libs.shared.db.session import get_db_session
 
 logger = logging.getLogger(__name__)
@@ -52,6 +57,28 @@ def aggregate_template_drift(self) -> dict:
             {"since": since},
         ).fetchall()
 
+        # H2-FIX: batch-load correction counts for ALL version IDs in one query
+        version_ids = [str(row.version_id) for row in rows if row.version_id]
+        corrections_map: dict[str, int] = {}
+        if version_ids:
+            corr_rows = db.execute(
+                text(
+                    """
+                    SELECT
+                        j.matched_template_version_id::text AS version_id,
+                        COUNT(DISTINCT f.fax_job_id) AS correction_count
+                    FROM fax_feedback f
+                    JOIN fax_job j ON j.fax_job_id = f.fax_job_id
+                    WHERE j.matched_template_version_id = ANY(:version_ids::uuid[])
+                      AND j.processing_completed_at >= :since
+                    GROUP BY j.matched_template_version_id
+                    """
+                ),
+                {"version_ids": version_ids, "since": since},
+            ).fetchall()
+            for cr in corr_rows:
+                corrections_map[str(cr.version_id)] = int(cr.correction_count)
+
         for row in rows:
             version_id = row.version_id
             total_jobs = int(row.total_jobs or 0)
@@ -62,21 +89,8 @@ def aggregate_template_drift(self) -> dict:
             avg_match_score = float(row.avg_match_score or 0.0)
             needs_review_rate = float(row.needs_review_jobs or 0) / total_jobs
 
-            corrections_count = int(
-                db.execute(
-                    text(
-                        """
-                        SELECT COUNT(DISTINCT f.fax_job_id)
-                        FROM fax_feedback f
-                        JOIN fax_job j ON j.fax_job_id = f.fax_job_id
-                        WHERE j.matched_template_version_id = :version_id
-                          AND j.processing_completed_at >= :since
-                        """
-                    ),
-                    {"version_id": str(version_id), "since": since},
-                ).scalar()
-                or 0
-            )
+            # H2-FIX: use pre-fetched corrections map
+            corrections_count = corrections_map.get(str(version_id), 0)
             correction_rate = corrections_count / total_jobs
 
             signals: list[str] = []
@@ -174,6 +188,7 @@ def aggregate_template_drift(self) -> dict:
 def _ensure_candidate_version(db, base_version_id, payload: dict) -> bool:
     """
     Create one inactive candidate version per template/day when drift is detected.
+    M3-FIX: Also clones sample images so the candidate can be used for matching.
     """
     base_version = db.get(FaxTemplateVersion, base_version_id)
     if base_version is None:
@@ -207,7 +222,12 @@ def _ensure_candidate_version(db, base_version_id, payload: dict) -> bool:
         is_active=False,
     )
     db.add(candidate)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        logger.info("Drift candidate version already exists for label=%s", label)
+        return False
 
     # Clone field definitions so reviewers can recalibrate anchor/ROI config.
     fields = (
@@ -234,6 +254,26 @@ def _ensure_candidate_version(db, base_version_id, payload: dict) -> bool:
                     **(field.post_processing or {}),
                     "needs_recalibration": True,
                 },
+            )
+        )
+
+    # M3-FIX: Clone sample images so the candidate version has reference images
+    # for pHash/ORB matching.
+    samples = (
+        db.query(FaxTemplateSample)
+        .filter(FaxTemplateSample.template_version_id == base_version.template_version_id)
+        .all()
+    )
+    for sample in samples:
+        db.add(
+            FaxTemplateSample(
+                template_version_id=candidate.template_version_id,
+                sample_storage_key=sample.sample_storage_key,
+                phash_value=sample.phash_value,
+                orb_descriptors=sample.orb_descriptors,
+                orb_keypoints=sample.orb_keypoints,
+                width_px=sample.width_px,
+                height_px=sample.height_px,
             )
         )
     return True

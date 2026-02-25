@@ -133,18 +133,25 @@ class EmbeddingRepository:
         """
         vec_str = self._vector_to_str(query_embedding)
 
-        if fax_job_id:
+        if fax_job_id and tenant_id:
             sql = text("""
                 SELECT
-                    embedding_id, fax_job_id, fax_page_id,
-                    source_text, source_type, chunk_index,
-                    1 - (embedding <=> CAST(:query_vec AS vector)) AS similarity_score
-                FROM fax_embedding
-                WHERE fax_job_id = :job_id
-                ORDER BY embedding <=> CAST(:query_vec AS vector)
+                    e.embedding_id, e.fax_job_id, e.fax_page_id,
+                    e.source_text, e.source_type, e.chunk_index,
+                    1 - (e.embedding <=> CAST(:query_vec AS vector)) AS similarity_score
+                FROM fax_embedding e
+                JOIN fax_job j ON j.fax_job_id = e.fax_job_id
+                WHERE e.fax_job_id = :job_id
+                  AND j.tenant_id = :tenant_id
+                ORDER BY e.embedding <=> CAST(:query_vec AS vector)
                 LIMIT :limit
             """)
-            params = {"query_vec": vec_str, "job_id": str(fax_job_id), "limit": limit}
+            params = {"query_vec": vec_str, "job_id": str(fax_job_id), "tenant_id": tenant_id, "limit": limit}
+        elif fax_job_id:
+            raise ValueError(
+                "cosine_search with fax_job_id also requires tenant_id "
+                "to enforce tenant isolation"
+            )
         elif tenant_id:
             sql = text("""
                 SELECT

@@ -329,14 +329,16 @@ The pipeline is orchestrated by `workers/fax_processing_worker/tasks/process_fax
 
 | File | Purpose |
 |------|---------|
+| `constants.py` | Canonical `CRITICAL_FIELDS` frozenset (9 fields) — imported by hitl, validators, confidence_scorer |
 | `field_builder.py` | `FieldBuilder` — multi-source merge, scoring hierarchy, `ExtractionCandidate`, VLM preprocessing |
 | `template_extractor.py` | `TemplateExtractor` — ROI-based field extraction, label-anchored extraction, template verification |
-| `ocr_label_extractor.py` | Label-value pair extraction from OCR tokens |
+| `ocr_label_extractor.py` | Label-value pair extraction from OCR tokens (16 field aliases including insurance_rep_name, insurance_rep_phone) |
 | `layoutlm_extractor.py` | LayoutLM document QA model wrapper |
 | `validators.py` | `FieldValidator` — date, phone, SSN, NPI (Luhn), member ID validation |
 | `canonicalizer.py` | `FieldCanonicalizer` — value normalization (dates, phones, SSNs) |
 | `cross_field_validator.py` | `CrossFieldValidator` — inter-field consistency checks |
 | `hitl.py` | `compute_field_flags()` — per-field HITL review flags |
+| `output_formatter.py` | Client-facing response format (supports OCR_LABEL, DONUT, HUMAN, SYSTEM sources); injects metadata fields (payer_name, fax_received_date) |
 
 ### `libs/shared/scoring/` — Confidence Scoring
 
@@ -448,7 +450,8 @@ All repositories are in `libs/shared/db/repositories/`:
 
 ### Authentication (`libs/shared/security/auth.py`)
 - **JWT-based**: All API endpoints require a Bearer token
-- **Dev bypass**: When `ENVIRONMENT != "production"`, returns a synthetic admin user for local testing
+- **Dev bypass**: When `ENVIRONMENT != "production"`, returns a synthetic user with `reviewer` role (not admin) for local testing
+- **Tenant isolation**: Always enforced at the repository layer regardless of environment
 - **FastAPI dependencies**: `require_auth()`, `optional_auth()`, `require_admin()`
 
 ### Middleware (`libs/shared/security/middleware.py`)
@@ -519,11 +522,13 @@ The UI is a single-page application served from `services/fax_review_api/ui/`:
 5. Create templates via the UI or API
 
 ### Adding a New Extracted Field
-1. Add field questions in `libs/shared/extraction/layoutlm_extractor.py` → `FIELD_QUESTIONS_KEYS`
-2. Add OCR label patterns in `libs/shared/extraction/ocr_label_extractor.py`
-3. Add validation logic in `libs/shared/extraction/validators.py`
-4. Add field weight in `libs/shared/scoring/confidence_scorer.py` → `FIELD_WEIGHTS`
-5. Add template ROI fields via the UI for payer templates
+1. Add label aliases in `libs/shared/extraction/ocr_label_extractor.py` → `LABEL_ALIASES` dict (currently 16 fields)
+2. If phone-type, add to phone filter tuple (`"provider_phone", "provider_fax", "insurance_rep_phone"`) in the same file and in `workers/fax_processing_worker/tasks/stages/validation.py`
+3. If metadata-sourced (not OCR), add to `libs/shared/extraction/output_formatter.py` → `format_summary()` as a keyword arg
+4. Add field questions in `libs/shared/extraction/layoutlm_extractor.py` → `FIELD_QUESTIONS_KEYS`
+5. Add validation logic in `libs/shared/extraction/validators.py` (optional)
+6. Add to `libs/shared/extraction/constants.py` → `CRITICAL_FIELDS` only if patient-safety/billing critical
+7. Add template ROI fields via the UI for payer templates
 
 ### Adding a New OCR Scanner
 1. Add a new `_your_scanner()` function in `workers/fax_processing_worker/tasks/stages/post_processing.py`

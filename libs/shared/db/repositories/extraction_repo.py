@@ -5,8 +5,9 @@ Extraction repositories.
 import logging
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -151,7 +152,20 @@ class ExtractedFieldRepository(BaseRepository[FaxExtractedField]):
             evidence_bbox=evidence_bbox,
             evidence_text=evidence_text,
         )
-        return self.create(field)
+        try:
+            return self.create(field)
+        except IntegrityError:
+            self.db.rollback()
+            # Race condition: another transaction inserted first — retry as update
+            existing = self.get_field(fax_job_id, field_key, method)
+            if existing:
+                existing.field_value = field_value
+                existing.field_conf = field_conf
+                existing.evidence_bbox = evidence_bbox
+                existing.evidence_text = evidence_text
+                self.db.flush()
+                return existing
+            raise
 
     def update_validation(
         self,
@@ -186,13 +200,13 @@ class ExtractedFieldRepository(BaseRepository[FaxExtractedField]):
             self.db.flush()
 
     def delete_by_job(self, fax_job_id: UUID) -> int:
-        """Delete all fields for a job."""
-        fields = self.get_by_job(fax_job_id)
-        count = len(fields)
-        for field in fields:
-            self.db.delete(field)
+        """Delete all fields for a job in a single bulk DELETE."""
+        stmt = delete(FaxExtractedField).where(
+            FaxExtractedField.fax_job_id == fax_job_id
+        )
+        result = self.db.execute(stmt)
         self.db.flush()
-        return count
+        return result.rowcount
 
 
 class ExtractionRepository(BaseRepository[FaxExtraction]):

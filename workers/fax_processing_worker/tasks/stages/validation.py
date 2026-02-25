@@ -53,7 +53,7 @@ def validate_fields(ctx: PipelineContext) -> None:
         _key_lower = field_key.lower()
         if "date" in _key_lower or "dob" in _key_lower:
             _field_type = "date"
-        elif "phone" in _key_lower or _key_lower in ("fax_number", "fax_phone"):
+        elif "phone" in _key_lower or _key_lower.endswith("_fax") or _key_lower in ("fax_number", "fax_phone", "provider_fax", "insurance_rep_phone"):
             _field_type = "phone"
         elif "ssn" in _key_lower or "social" in _key_lower:
             _field_type = "ssn"

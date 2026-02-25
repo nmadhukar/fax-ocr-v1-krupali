@@ -200,7 +200,7 @@ Each should return: `{"status": "ok"}`
 | Query API | http://localhost:8003 | High-performance read queries |
 | MinIO Console | http://localhost:9001 | File storage browser |
 
-MinIO login: `minioadmin` / `minioadmin123` (change in `.env.docker` for production)
+MinIO login: credentials are configured via `MINIO_ACCESS_KEY` and `MINIO_SECRET_KEY` in `.env.docker`. **These have no default values** and must be explicitly set. The Docker Compose stack provides initial values for local testing — change them before any production deployment.
 
 ---
 
@@ -402,10 +402,10 @@ docker compose up fax_minio_init
 
 Before exposing this system outside a local network:
 
-- [ ] Set `SECRET_KEY` to a random 32+ character string
-- [ ] Change `MINIO_ACCESS_KEY` and `MINIO_SECRET_KEY` from defaults
-- [ ] Change `POSTGRES_PASSWORD` in `docker-compose.yml` and `DATABASE_URL` in `.env.docker`
-- [ ] Set `ENVIRONMENT=production` in `.env.docker`
+- [ ] Set `DATABASE_URL` with a strong password (**required** — no default)
+- [ ] Set `SECRET_KEY` to a random 32+ character string (**required** — no default)
+- [ ] Set `MINIO_ACCESS_KEY` and `MINIO_SECRET_KEY` to strong values (**required** — no default)
+- [ ] Set `ENVIRONMENT=production` in `.env.docker` (triggers credential validation at startup)
 - [ ] Set `API_DEBUG=false`
 - [ ] Configure `API_ALLOWED_HOSTS` to your actual hostname
 - [ ] Configure `API_ALLOWED_ORIGINS` to your frontend domain
@@ -414,6 +414,8 @@ Before exposing this system outside a local network:
 - [ ] Do not expose ports 5432, 6379, or 9000 publicly — they should be internal only
 - [ ] Set `MINIO_SECURE=true` and configure MinIO TLS if MinIO is exposed directly
 - [ ] Review and restrict Docker volume permissions on the host
+- [ ] Verify tenant isolation is enforced (always on, regardless of environment)
+- [ ] Verify file uploads are validated for type, size, and magic bytes
 
 ---
 

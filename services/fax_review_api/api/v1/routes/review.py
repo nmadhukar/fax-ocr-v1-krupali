@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -96,7 +96,7 @@ class FieldCorrection(BaseModel):
     """Corrected field value."""
 
     field_key: str = Field(..., min_length=1, max_length=100)
-    corrected_value: str = Field(..., min_length=1, max_length=2048)
+    corrected_value: str = Field(..., min_length=0, max_length=2048)
     evidence_bbox: dict[str, float] | None = None
 
 
@@ -303,9 +303,8 @@ def get_review_packet(
             detail=f"Fax job not found: {fax_job_id}",
         )
 
-    # Tenant isolation
-    settings = get_settings()
-    if settings.environment != "development" and job.tenant_id != user.tenant_id:
+    # Tenant isolation — always enforced regardless of environment
+    if job.tenant_id != user.tenant_id:
         if not user.is_admin:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -443,16 +442,14 @@ def claim_review(
             detail="reviewer_id must match authenticated user",
         )
 
-    # Tenant isolation: verify the job belongs to the caller's tenant
-    settings = get_settings()
-    if settings.environment != "development":
-        job_repo = FaxJobRepository(db)
-        job = job_repo.get_by_id(fax_job_id)
-        if job and job.tenant_id != user.tenant_id and not user.is_admin:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Cannot claim a review belonging to another tenant",
-            )
+    # Tenant isolation — always enforced regardless of environment
+    job_repo = FaxJobRepository(db)
+    job = job_repo.get_by_id(fax_job_id)
+    if job and job.tenant_id != user.tenant_id and not user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot claim a review belonging to another tenant",
+        )
 
     review_repo = ReviewRepository(db)
     review = review_repo.get_by_job(fax_job_id)
@@ -532,14 +529,12 @@ def submit_review(
             detail=f"Fax job not found: {fax_job_id}",
         )
 
-    # Tenant isolation: verify the job belongs to the caller's tenant
-    settings = get_settings()
-    if settings.environment != "development":
-        if job.tenant_id != user.tenant_id and not user.is_admin:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Cannot submit a review belonging to another tenant",
-            )
+    # Tenant isolation — always enforced regardless of environment
+    if job.tenant_id != user.tenant_id and not user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot submit a review belonging to another tenant",
+        )
 
     review_repo = ReviewRepository(db)
     review = review_repo.get_by_job(fax_job_id)
@@ -694,18 +689,42 @@ def submit_review(
                 target_page = fallback_page
 
             if target_page:
-                label_repo.create_label(
-                    fax_job_id=fax_job_id,
-                    fax_page_id=target_page.fax_page_id,
-                    field_key=correction["field_key"],
-                    ground_truth_value=correction["corrected_value"],
-                    page_storage_key=target_page.page_storage_key or "",
-                    ground_truth_bbox=correction["evidence_bbox"],
-                    payer_name=job.payer_hint,   # PayerNameEnum
-                    doc_type=job.doc_type,       # DocTypeEnum
-                    source="human_review",
-                    created_by=reviewer_id,
-                )
+                try:
+                    label_repo.create_label(
+                        fax_job_id=fax_job_id,
+                        fax_page_id=target_page.fax_page_id,
+                        field_key=correction["field_key"],
+                        ground_truth_value=correction["corrected_value"],
+                        page_storage_key=target_page.page_storage_key or "",
+                        ground_truth_bbox=correction["evidence_bbox"],
+                        payer_name=job.payer_hint,   # PayerNameEnum
+                        doc_type=job.doc_type,       # DocTypeEnum
+                        source="human_review",
+                        created_by=reviewer_id,
+                    )
+                except Exception as label_exc:
+                    # Duplicate label (unique constraint) or other DB error —
+                    # attempt UPDATE instead of INSERT on conflict.
+                    from sqlalchemy.exc import IntegrityError
+
+                    if isinstance(label_exc, IntegrityError):
+                        db.rollback()
+                        logger.debug(
+                            "Label already exists for job=%s field=%s, updating",
+                            fax_job_id, correction["field_key"],
+                        )
+                        label_repo.update_label(
+                            fax_job_id=fax_job_id,
+                            fax_page_id=target_page.fax_page_id,
+                            field_key=correction["field_key"],
+                            ground_truth_value=correction["corrected_value"],
+                            ground_truth_bbox=correction["evidence_bbox"],
+                        )
+                    else:
+                        logger.warning(
+                            "Failed to write label for job=%s field=%s: %s",
+                            fax_job_id, correction["field_key"], label_exc,
+                        )
     except Exception:
         logger.warning(
             "Failed to write training labels for job %s", fax_job_id, exc_info=True
@@ -732,8 +751,8 @@ def submit_review(
 def list_pending_reviews(
     http_request: Request,
     user: AuthUser = Depends(get_current_user),
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=500),
     db: Session = Depends(get_db),
 ) -> list[ReviewListItem]:
     """List all pending reviews (scoped to caller's tenant unless admin)."""
@@ -763,8 +782,8 @@ def list_pending_reviews(
 def list_unclaimed_reviews(
     http_request: Request,
     user: AuthUser = Depends(get_current_user),
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=500),
     db: Session = Depends(get_db),
 ) -> list[ReviewListItem]:
     """List unclaimed reviews available for claiming (scoped to caller's tenant unless admin)."""

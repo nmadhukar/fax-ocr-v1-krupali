@@ -45,7 +45,7 @@ fax_ocr/
 |   +-- payer_rules.yml          Per-payer field validation rules
 |
 +-- infra/
-|   +-- migrations/              SQL migration files (001 through 009)
+|   +-- migrations/              SQL migration files (001 through 014)
 |   +-- init-scripts/            PostgreSQL extension setup (runs on first container start)
 |   +-- docker-compose.dev.yml   Dev-only infra compose (no application containers)
 |   +-- alembic.ini              Alembic config (not used in current setup)
@@ -113,11 +113,12 @@ fax_ocr/
 |   |   +-- phash.py             pHash computation, signed/unsigned conversion
 |   |
 |   +-- extraction/
+|   |   +-- constants.py            Canonical CRITICAL_FIELDS frozenset (9 fields)
 |   |   +-- template_extractor.py    Label-anchored field extraction
-|   |   +-- ocr_label_extractor.py  Regex-based label matching
+|   |   +-- ocr_label_extractor.py  Regex-based label matching (16 field aliases)
 |   |   +-- layoutlm_extractor.py   LayoutLM gap-fill extractor
 |   |   +-- field_builder.py        Multi-source merge and scoring
-|   |   +-- output_formatter.py     Client-facing format conversion
+|   |   +-- output_formatter.py     Client-facing format conversion (supports SYSTEM source for metadata fields)
 |   |   +-- field_type_validator.py Field type validation rules
 |   |   +-- hitl.py                 HITL flag computation and correction application
 |   |
@@ -142,6 +143,7 @@ fax_ocr/
 |   +-- seed_templates.py
 |   +-- generate_training_data.py
 |   +-- finetune_layoutlm.py
+|   +-- train_candidate_ranker.py  Candidate ranker training (--lookback-days)
 |   +-- export_training_data.py
 |   +-- do_upload.py
 |   +-- start_services.ps1
@@ -350,7 +352,9 @@ Output: a LoRA adapter directory (saved to disk). The path is printed on complet
 - Checks count of new `fax_label_example` records since last training run
 - If count >= `RETRAIN_MIN_NEW_LABELS` (default 20), triggers fine-tuning
 - Registers the new adapter version
-- Optionally auto-promotes if `RETRAIN_AUTO_PROMOTE=true`
+- The new adapter is only auto-promoted if its evaluation accuracy meets the minimum threshold (`RETRAIN_MIN_PROMOTE_ACCURACY`, default 0.70); otherwise it is registered but left inactive for manual review
+- The candidate ranker training (`scripts/train_candidate_ranker.py`) uses a configurable lookback window (`--lookback-days`, default 90) to limit training data recency
+- Atomic file writes (tempfile + `os.replace()`) are used for model and metrics files to prevent corruption
 
 ---
 
@@ -364,7 +368,11 @@ Output: a LoRA adapter directory (saved to disk). The path is printed on complet
 
 **Audit logging**: The `AuditLogger` in `libs/shared/utils/auth.py` writes to the `audit_log` table. It is called explicitly in route handlers that access PHI — not as middleware — because the PHI scope varies by route. The `claim_review` route writes the audit log before `db.commit()` to ensure the log is always written even if the commit fails.
 
-**Credential enforcement**: `libs/shared/config/settings.py` checks `ENVIRONMENT == "production"` and raises `RuntimeError` at startup if any of `SECRET_KEY`, `MINIO_ACCESS_KEY`, or `MINIO_SECRET_KEY` are the default development values.
+**Credential enforcement**: `libs/shared/config/settings.py` validates that `DATABASE_URL`, `SECRET_KEY`, `MINIO_ACCESS_KEY`, and `MINIO_SECRET_KEY` are explicitly configured. These settings default to empty strings and will fail validation if not set. In staging and production environments, additional validation ensures credentials are not left empty.
+
+**Tenant isolation**: Tenant isolation is **always enforced** at the repository layer regardless of `ENVIRONMENT`. The development-mode bypass user has `reviewer` role (not admin).
+
+**File upload validation**: Uploaded files are validated for content type, file size, and magic bytes before processing. `None` content types are rejected, files are read in chunks with a size cap, and `validate_file_magic()` is called after read.
 
 ---
 
@@ -531,7 +539,7 @@ All variables read by the application, grouped by component:
 `SECRET_KEY`, `ENVIRONMENT`
 
 ### Retraining
-`RETRAIN_MIN_NEW_LABELS`, `RETRAIN_AUTO_PROMOTE`
+`RETRAIN_MIN_NEW_LABELS`, `RETRAIN_AUTO_PROMOTE`, `RETRAIN_MIN_PROMOTE_ACCURACY`
 
 ### Model Cache
 `HF_HOME` (HuggingFace cache dir), `PADDLEOCR_HOME` (PaddleOCR model cache dir)

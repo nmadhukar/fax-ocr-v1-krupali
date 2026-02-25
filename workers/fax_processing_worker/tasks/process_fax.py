@@ -213,7 +213,7 @@ def process_fax_task(self, fax_job_id: str, tenant_id: str) -> dict[str, Any]:
                 "fax_job_id": fax_job_id,
                 "status": ctx.job.status.value,
                 "pages": len(ctx.pages),
-                "payer": ctx.detected_payer.value,
+                "payer": ctx.detected_payer.value if ctx.detected_payer else "UNKNOWN",
                 "doc_type": ctx.job.doc_type.value if ctx.job.doc_type else None,
                 "template_matched": (
                     ctx.match_result.matched if ctx.match_result else False
@@ -232,9 +232,9 @@ def process_fax_task(self, fax_job_id: str, tenant_id: str) -> dict[str, Any]:
                 "overall_confidence": ctx.overall_conf,
                 "needs_review": ctx.needs_review,
                 "fields_extracted": len(ctx.extracted_fields),
-                "validation_failures": ctx.scoring_result.validation_failure_count,
-                "cross_field_consistent": ctx.cross_result.is_consistent,
-                "review_reasons": ctx.scoring_result.review_reasons,
+                "validation_failures": ctx.scoring_result.validation_failure_count if ctx.scoring_result else 0,
+                "cross_field_consistent": ctx.cross_result.is_consistent if ctx.cross_result else None,
+                "review_reasons": ctx.scoring_result.review_reasons if ctx.scoring_result else [],
             }
 
         except Exception as e:

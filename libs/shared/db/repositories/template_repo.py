@@ -5,7 +5,7 @@ Template repositories for template management.
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, select, update
 from sqlalchemy.orm import Session, joinedload
 
 from libs.shared.db.models.enums import DocTypeEnum, PayerNameEnum
@@ -155,21 +155,25 @@ class TemplateVersionRepository(BaseRepository[FaxTemplateVersion]):
         if not version:
             return None
 
-        # Deactivate all versions for this template
-        stmt = (
-            select(FaxTemplateVersion)
+        # Atomically deactivate all versions for this template in a single UPDATE
+        deactivate_stmt = (
+            update(FaxTemplateVersion)
             .where(FaxTemplateVersion.template_id == version.template_id)
+            .values(is_active=False)
         )
-        all_versions = list(self.db.execute(stmt).scalars().all())
-
-        for v in all_versions:
-            v.is_active = False
+        self.db.execute(deactivate_stmt)
 
         # Activate the requested version
-        version.is_active = True
-        version.activated_at = datetime.now(timezone.utc)
+        activate_stmt = (
+            update(FaxTemplateVersion)
+            .where(FaxTemplateVersion.template_version_id == template_version_id)
+            .values(is_active=True, activated_at=datetime.now(timezone.utc))
+        )
+        self.db.execute(activate_stmt)
 
         self.db.flush()
+        # Refresh the ORM object to reflect the UPDATE
+        self.db.refresh(version)
         return version
 
     def get_all_active_versions(self) -> list[FaxTemplateVersion]:
@@ -217,9 +221,12 @@ class TemplateSampleRepository(BaseRepository[FaxTemplateSample]):
         Returns:
             List of matching samples.
         """
-        # For now, get all samples and filter in Python
-        # In production, this should use a specialized index
-        stmt = select(FaxTemplateSample)
+        # Only search samples from active template versions to reduce scan size
+        stmt = (
+            select(FaxTemplateSample)
+            .join(FaxTemplateVersion)
+            .where(FaxTemplateVersion.is_active == True)  # noqa: E712
+        )
         all_samples = list(self.db.execute(stmt).scalars().all())
 
         return [

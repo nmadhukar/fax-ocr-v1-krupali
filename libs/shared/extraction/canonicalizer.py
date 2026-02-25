@@ -5,7 +5,7 @@ Normalizes extracted values to standard formats.
 """
 
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class FieldCanonicalizer:
@@ -101,7 +101,7 @@ class FieldCanonicalizer:
             # otherwise assume 2000s.  This avoids the fixed-30 bug that
             # would misinterpret 2030+ dates as 1930s.
             if len(year) == 2:
-                current_year = datetime.now().year
+                current_year = datetime.now(timezone.utc).year
                 y = int(year)
                 # Balanced 30-year forward window: 2-digit years within
                 # 30 years ahead of now stay in current century;

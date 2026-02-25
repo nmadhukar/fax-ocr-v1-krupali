@@ -43,31 +43,38 @@ def aggregate_mismatch_metrics(self) -> dict:
     alerts_triggered = 0
 
     with get_db_session() as db:
-        # Find fields with multiple candidates that have different values
-        # A mismatch = same (job, field_key) has > 1 distinct field_value
+        # H1-FIX: Use a CTE instead of a correlated subquery for O(n) perf.
+        # M5-FIX: Join template_id in the main query instead of N+1 lookups.
         rows = db.execute(
             text("""
+                WITH mismatches AS (
+                    SELECT f2.fax_job_id, f2.field_key
+                    FROM fax_extracted_field f2
+                    JOIN fax_job j2 ON j2.fax_job_id = f2.fax_job_id
+                    WHERE j2.processing_completed_at >= :period_start
+                      AND j2.processing_completed_at < :period_end
+                      AND j2.status IN ('COMPLETED', 'NEEDS_REVIEW')
+                    GROUP BY f2.fax_job_id, f2.field_key
+                    HAVING COUNT(DISTINCT f2.field_value) > 1
+                )
                 SELECT
                     j.payer_hint AS payer_name,
                     j.matched_template_version_id,
+                    tv.template_id,
                     f.field_key,
                     COUNT(DISTINCT f.fax_job_id) AS total_jobs,
-                    COUNT(DISTINCT f.fax_job_id) FILTER (
-                        WHERE f.fax_job_id IN (
-                            SELECT f2.fax_job_id
-                            FROM fax_extracted_field f2
-                            WHERE f2.field_key = f.field_key
-                              AND f2.fax_job_id = f.fax_job_id
-                            GROUP BY f2.fax_job_id, f2.field_key
-                            HAVING COUNT(DISTINCT f2.field_value) > 1
-                        )
-                    ) AS mismatch_jobs
+                    COUNT(DISTINCT m.fax_job_id) AS mismatch_jobs
                 FROM fax_extracted_field f
                 JOIN fax_job j ON j.fax_job_id = f.fax_job_id
+                LEFT JOIN fax_template_version tv
+                    ON tv.template_version_id = j.matched_template_version_id
+                LEFT JOIN mismatches m
+                    ON m.fax_job_id = f.fax_job_id AND m.field_key = f.field_key
                 WHERE j.processing_completed_at >= :period_start
                   AND j.processing_completed_at < :period_end
-                  AND j.status IN ('completed', 'needs_review')
-                GROUP BY j.payer_hint, j.matched_template_version_id, f.field_key
+                  AND j.status IN ('COMPLETED', 'NEEDS_REVIEW')
+                GROUP BY j.payer_hint, j.matched_template_version_id,
+                         tv.template_id, f.field_key
                 HAVING COUNT(DISTINCT f.fax_job_id) >= 1
             """),
             {"period_start": period_start, "period_end": period_end},
@@ -76,26 +83,13 @@ def aggregate_mismatch_metrics(self) -> dict:
 
         for row in results:
             payer_name = row[0]
-            template_version_id = row[1]
-            field_key = row[2]
-            total_count = row[3]
-            mismatch_count = row[4]
+            template_id = row[2]  # M5-FIX: already joined
+            field_key = row[3]
+            total_count = row[4]
+            mismatch_count = row[5]
 
             mismatch_rate = mismatch_count / total_count if total_count > 0 else 0
             alert_triggered = mismatch_rate > ALERT_THRESHOLD and mismatch_count > 0
-
-            # Look up template_id from version_id
-            template_id = None
-            if template_version_id:
-                tv_row = db.execute(
-                    text("""
-                        SELECT template_id FROM fax_template_version
-                        WHERE template_version_id = :vid
-                    """),
-                    {"vid": str(template_version_id)},
-                ).fetchone()
-                if tv_row:
-                    template_id = tv_row[0]
 
             # Insert metric
             db.execute(
@@ -127,12 +121,16 @@ def aggregate_mismatch_metrics(self) -> dict:
                 db.execute(
                     text("""
                         INSERT INTO audit_log
-                            (event_type, event_data)
+                            (tenant_id, user_id, action, resource_type, details)
                         VALUES
-                            ('MISMATCH_ALERT', :data::jsonb)
+                            (:tenant_id, :user_id, :action, :resource_type, CAST(:details AS jsonb))
                     """),
                     {
-                        "data": json.dumps({
+                        "tenant_id": "system",
+                        "user_id": "fax-beat",
+                        "action": "MISMATCH_ALERT",
+                        "resource_type": "mismatch_metric",
+                        "details": json.dumps({
                             "payer": payer_name,
                             "field": field_key,
                             "mismatch_rate": round(mismatch_rate, 2),

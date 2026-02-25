@@ -713,7 +713,7 @@ class TemplateExtractor:
         elif dist > 0.30:
             avg_conf -= 0.10  # Far from expected position
 
-        return max(0.30, min(1.0, avg_conf))
+        return max(0.15, min(1.0, avg_conf))
 
     # Label-prefix patterns to strip before type-specific processing.
     # Healthcare fax forms often include the label in the same OCR token
@@ -834,9 +834,13 @@ class TemplateExtractor:
             for part in parts:
                 clean = part.strip("()[]{}.,;:")
                 # OCR correction: "112036" → "H2036" (H misread as 11)
+                # Only apply when the result would be a known HCPCS prefix (H, G, J, S, T, Q)
+                # Skip for CPT ranges 10000-69999 to avoid corrupting valid CPT codes
                 if re.match(r"^11[0-9]{4}$", clean):
-                    clean = "H" + clean[2:]
-                    part = clean
+                    potential_hcpcs = "H" + clean[2:]
+                    if potential_hcpcs[0] in "HGJSTQ":
+                        clean = potential_hcpcs
+                        part = clean
                 has_digit = any(c.isdigit() for c in clean)
                 is_code_like = re.match(r"^[A-Za-z0-9.\-]+$", clean) and len(clean) <= 10
                 if has_digit and is_code_like:

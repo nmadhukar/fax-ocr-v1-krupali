@@ -12,17 +12,12 @@ from typing import Any
 
 from libs.shared.config.payer_rules import PayerRulesLoader, get_payer_rules
 from libs.shared.extraction.canonicalizer import FieldCanonicalizer
+from libs.shared.extraction.constants import CRITICAL_FIELDS
 
 logger = logging.getLogger(__name__)
 
-# Default critical fields that are weighted higher
-DEFAULT_CRITICAL_FIELDS = [
-    "member_id",
-    "prior_auth_number",
-    "decision",
-    "patient_name",
-    "patient_dob",
-]
+# Critical fields imported from the single source of truth
+DEFAULT_CRITICAL_FIELDS = list(CRITICAL_FIELDS)
 
 # Weight multipliers
 CRITICAL_FIELD_WEIGHT = 2.0

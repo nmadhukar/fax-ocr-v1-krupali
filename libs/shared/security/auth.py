@@ -155,7 +155,7 @@ def _build_user(payload: dict) -> AuthUser:
 _DEV_USER = AuthUser(
     user_id="dev-user",
     tenant_id="dev-tenant",
-    roles=["admin"],
+    roles=["reviewer"],
 )
 
 

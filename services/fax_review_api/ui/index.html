@@ -513,6 +513,21 @@
               <span>Validation Regex</span>
               <input id="fieldRegex" type="text">
             </label>
+            <label class="field">
+              <span>Anchor Aliases (optional)</span>
+              <input id="fieldAnchorAliases" type="text" placeholder="Requesting Provider Name, Servicing Provider Name">
+            </label>
+            <label class="field">
+              <span>Anchor Direction</span>
+              <select id="fieldAnchorDirection">
+                <option value="right">right</option>
+                <option value="below">below</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Anchor Max Tokens</span>
+              <input id="fieldAnchorMaxTokens" type="number" min="1" max="12" value="4">
+            </label>
             <label class="field inline">
               <span>Required Field</span>
               <input id="fieldRequired" type="checkbox">
@@ -540,6 +555,7 @@
                   <th>Label</th>
                   <th>ROI</th>
                   <th>Target Page</th>
+                  <th>Anchor</th>
                   <th>Required</th>
                 </tr>
               </thead>
@@ -663,6 +679,7 @@
                 <option value="payers">All Payers</option>
                 <option value="payer">Single Payer</option>
                 <option value="feedback">Feedback Summary</option>
+                <option value="template_drift">Template Drift Signals</option>
                 <option value="recalibrate">Recalibrate Thresholds</option>
               </select>
             </label>
