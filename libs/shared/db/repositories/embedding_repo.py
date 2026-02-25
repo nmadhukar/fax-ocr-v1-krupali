@@ -53,7 +53,7 @@ class EmbeddingRepository:
                     (fax_job_id, fax_page_id, embedding, source_text,
                      source_type, chunk_index, token_count)
                 VALUES
-                    (:job_id, :page_id, :embedding::vector, :source_text,
+                    (:job_id, :page_id, CAST(:embedding AS vector), :source_text,
                      :source_type, :chunk_index, :token_count)
                 RETURNING embedding_id
             """),
@@ -105,7 +105,7 @@ class EmbeddingRepository:
                     (fax_job_id, fax_page_id, embedding, source_text,
                      source_type, chunk_index, token_count)
                 VALUES
-                    (:fax_job_id, :fax_page_id, :embedding_str::vector,
+                    (:fax_job_id, :fax_page_id, CAST(:embedding_str AS vector),
                      :source_text, :source_type, :chunk_index, :token_count)
             """),
             params,
@@ -138,10 +138,10 @@ class EmbeddingRepository:
                 SELECT
                     embedding_id, fax_job_id, fax_page_id,
                     source_text, source_type, chunk_index,
-                    1 - (embedding <=> :query_vec::vector) AS similarity_score
+                    1 - (embedding <=> CAST(:query_vec AS vector)) AS similarity_score
                 FROM fax_embedding
                 WHERE fax_job_id = :job_id
-                ORDER BY embedding <=> :query_vec::vector
+                ORDER BY embedding <=> CAST(:query_vec AS vector)
                 LIMIT :limit
             """)
             params = {"query_vec": vec_str, "job_id": str(fax_job_id), "limit": limit}
@@ -150,11 +150,11 @@ class EmbeddingRepository:
                 SELECT
                     e.embedding_id, e.fax_job_id, e.fax_page_id,
                     e.source_text, e.source_type, e.chunk_index,
-                    1 - (e.embedding <=> :query_vec::vector) AS similarity_score
+                    1 - (e.embedding <=> CAST(:query_vec AS vector)) AS similarity_score
                 FROM fax_embedding e
                 JOIN fax_job j ON j.fax_job_id = e.fax_job_id
                 WHERE j.tenant_id = :tenant_id
-                ORDER BY e.embedding <=> :query_vec::vector
+                ORDER BY e.embedding <=> CAST(:query_vec AS vector)
                 LIMIT :limit
             """)
             params = {"query_vec": vec_str, "tenant_id": tenant_id, "limit": limit}

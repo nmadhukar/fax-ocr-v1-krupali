@@ -293,9 +293,15 @@ def generate_embeddings(ctx: PipelineContext) -> None:
                 }
                 for idx in range(pair_count)
             ]
-            count = emb_repo.bulk_insert_embeddings(emb_rows)
-            ctx.db.flush()
-            logger.info("Generated %d embeddings (%d chunks)", count, len(chunks))
+            try:
+                # Isolate optional embedding writes from core OCR transaction.
+                # If pgvector insert fails, keep processing the fax.
+                with ctx.db.begin_nested():
+                    count = emb_repo.bulk_insert_embeddings(emb_rows)
+                    ctx.db.flush()
+                logger.info("Generated %d embeddings (%d chunks)", count, len(chunks))
+            except Exception:
+                logger.warning("Embedding generation failed; skipping", exc_info=True)
 
     except Exception:
         logger.warning("Embedding generation failed; skipping", exc_info=True)

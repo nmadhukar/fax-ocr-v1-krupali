@@ -8,6 +8,7 @@ job record so downstream systems can inspect finalized case artifacts.
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
@@ -149,9 +150,10 @@ class PriorAuthClient:
         now = datetime.now(timezone.utc).isoformat()
         field_count = len(extraction_json or {})
 
-        meta = dict(job.job_metadata or {})
-        existing_case = meta.get("prior_auth_case")
-        if not isinstance(existing_case, dict):
+        meta = deepcopy(job.job_metadata or {})
+        raw_case = meta.get("prior_auth_case")
+        existing_case = dict(raw_case) if isinstance(raw_case, dict) else {}
+        if not existing_case:
             existing_case = {
                 "case_id": case_id,
                 "created_at": now,
