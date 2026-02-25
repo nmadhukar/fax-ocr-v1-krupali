@@ -60,24 +60,24 @@
       <button id="resetConfigBtn" class="btn subtle" type="button">Reset Defaults</button>
 
       <h3>Activity</h3>
-      <ul id="activityFeed" class="activity-feed"></ul>
+      <ul id="activityFeed" class="activity-feed" aria-live="polite" aria-relevant="additions"></ul>
     </aside>
 
     <section class="workspace">
-      <nav class="tabs reveal" aria-label="Operations areas">
-        <button class="tab active" type="button" data-tab="workflow">Workflow</button>
-        <button class="tab" type="button" data-tab="templates">Templates</button>
-        <button class="tab" type="button" data-tab="intelligence">Intelligence</button>
-        <button class="tab" type="button" data-tab="api">API Console</button>
+      <nav class="tabs reveal" aria-label="Operations areas" role="tablist">
+        <button class="tab active" type="button" data-tab="workflow" id="tab-btn-workflow" role="tab" aria-selected="true" aria-controls="tab-workflow">Workflow</button>
+        <button class="tab" type="button" data-tab="templates" id="tab-btn-templates" role="tab" aria-selected="false" aria-controls="tab-templates">Templates</button>
+        <button class="tab" type="button" data-tab="intelligence" id="tab-btn-intelligence" role="tab" aria-selected="false" aria-controls="tab-intelligence">Intelligence</button>
+        <button class="tab" type="button" data-tab="api" id="tab-btn-api" role="tab" aria-selected="false" aria-controls="tab-api">API Console</button>
       </nav>
 
-      <section id="tab-workflow" class="tab-panel active">
+      <section id="tab-workflow" class="tab-panel active" role="tabpanel" aria-labelledby="tab-btn-workflow">
         <article class="card reveal">
           <h2>Upload Fax</h2>
           <form id="uploadForm" class="form-grid">
             <label class="field span-2">
               <span>Document File</span>
-              <input id="uploadFile" type="file" required>
+              <input id="uploadFile" type="file" required accept=".pdf,.tiff,.tif,.png,.jpg,.jpeg">
             </label>
             <label class="field">
               <span>Tenant ID</span>
@@ -129,7 +129,7 @@
             </div>
           </form>
           <div class="table-wrap">
-            <table>
+            <table aria-label="Fax jobs listing">
               <thead>
                 <tr>
                   <th>Fax Job ID</th>
@@ -170,7 +170,7 @@
             <button id="releaseExpiredBtn" class="btn subtle" type="button">Release Expired Claims</button>
           </div>
           <div class="table-wrap">
-            <table>
+            <table aria-label="Review queue">
               <thead>
                 <tr>
                   <th>Fax Job ID</th>
@@ -206,7 +206,7 @@
 
           <h3>Extracted Fields And Corrections</h3>
           <div class="table-wrap">
-            <table>
+            <table aria-label="Extracted fields and corrections">
               <thead>
                 <tr>
                   <th>Field</th>
@@ -224,7 +224,7 @@
         </article>
       </section>
 
-      <section id="tab-templates" class="tab-panel">
+      <section id="tab-templates" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-templates">
         <article class="card reveal">
           <h2>Template Catalog</h2>
           <form id="listTemplatesForm" class="form-grid">
@@ -244,7 +244,7 @@
             </div>
           </form>
           <div class="table-wrap">
-            <table>
+            <table aria-label="Template catalog">
               <thead>
                 <tr>
                   <th>Template ID</th>
@@ -383,7 +383,7 @@
             </label>
             <label class="field">
               <span>Sample Image</span>
-              <input id="sampleFile" type="file" required>
+              <input id="sampleFile" type="file" required accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif">
             </label>
             <div class="span-2">
               <button class="btn primary" type="submit">Upload Sample</button>
@@ -451,7 +451,7 @@
           </form>
 
           <div class="table-wrap">
-            <table>
+            <table aria-label="Template fields">
               <thead>
                 <tr>
                   <th>Field Key</th>
@@ -472,7 +472,7 @@
           <form id="testMatchForm" class="form-grid">
             <label class="field">
               <span>Test Image</span>
-              <input id="testMatchFile" type="file" required>
+              <input id="testMatchFile" type="file" required accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif">
             </label>
             <label class="field">
               <span>Payer Hint (optional)</span>
@@ -490,7 +490,7 @@
             </label>
             <label class="field">
               <span>Page Image</span>
-              <input id="testExtractFile" type="file" required>
+              <input id="testExtractFile" type="file" required accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif">
             </label>
             <div class="span-2">
               <button class="btn ghost" type="submit">Run Test Extract</button>
@@ -522,7 +522,7 @@
         </article>
       </section>
 
-      <section id="tab-intelligence" class="tab-panel">
+      <section id="tab-intelligence" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-intelligence">
         <article class="card reveal">
           <h2>Search Extracted Data</h2>
           <form id="queryForm" class="form-grid">
@@ -551,7 +551,7 @@
             </div>
           </form>
           <div class="table-wrap">
-            <table>
+            <table aria-label="Query results">
               <thead>
                 <tr>
                   <th>Fax Job ID</th>
@@ -680,7 +680,7 @@
         </article>
       </section>
 
-      <section id="tab-api" class="tab-panel">
+      <section id="tab-api" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-api">
         <article class="card reveal">
           <h2>Advanced API Console</h2>
           <p class="panel-note">Use this for endpoints not explicitly wired in the curated screens.</p>
@@ -730,7 +730,7 @@
     </section>
   </main>
 
-  <div id="toastHost" class="toast-host"></div>
+  <div id="toastHost" class="toast-host" role="status" aria-live="polite"></div>
 
   <script src="./app.js"></script>
 </body>

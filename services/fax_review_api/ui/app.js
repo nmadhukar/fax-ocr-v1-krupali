@@ -40,11 +40,15 @@
   }
 
   function bindTabs() {
-    const tabButtons = Array.from(document.querySelectorAll(".tab"));
+    const tabButtons = Array.from(document.querySelectorAll(".tab[role='tab']"));
     tabButtons.forEach((button) => {
       button.addEventListener("click", () => {
         const tab = button.dataset.tab;
-        tabButtons.forEach((b) => b.classList.toggle("active", b === button));
+        tabButtons.forEach((b) => {
+          const isActive = b === button;
+          b.classList.toggle("active", isActive);
+          b.setAttribute("aria-selected", String(isActive));
+        });
         Array.from(document.querySelectorAll(".tab-panel")).forEach((panel) => {
           panel.classList.toggle("active", panel.id === `tab-${tab}`);
         });
@@ -141,7 +145,8 @@
         addIfTruthy(query, "tenant_id", $("jobsTenant").value.trim());
 
         const response = await apiRequest("ingress", "/v1/faxes", { query });
-        const jobs = response.data.faxes || [];
+        const data = response.data || {};
+        const jobs = data.faxes || [];
         renderJobsTable(jobs);
         addActivity(`Loaded ${jobs.length} jobs.`, "info");
       });
@@ -169,9 +174,9 @@
         return;
       }
       const action = button.dataset.inspectAction;
-      let endpoint = `/v1/faxes/${jobId}`;
-      if (action === "results") endpoint = `/v1/faxes/${jobId}/results`;
-      if (action === "ocr") endpoint = `/v1/faxes/${jobId}/ocr`;
+      let endpoint = `/v1/faxes/${encId(jobId)}`;
+      if (action === "results") endpoint = `/v1/faxes/${encId(jobId)}/results`;
+      if (action === "ocr") endpoint = `/v1/faxes/${encId(jobId)}/ocr`;
 
       await withButtonBusy(button, "Loading...", async () => {
         const response = await apiRequest("ingress", endpoint, { method: "GET" });
@@ -255,7 +260,7 @@
           payload.reviewer_id = state.profile.reviewerId.trim();
         }
 
-        const response = await apiRequest("review", `/v1/faxes/${jobId}/review/submit`, {
+        const response = await apiRequest("review", `/v1/faxes/${encId(jobId)}/review/submit`, {
           method: "POST",
           body: payload,
         });
@@ -273,8 +278,9 @@
         method: "GET",
         query: { limit: 100, skip: 0 },
       });
-      renderReviewQueueTable(response.data || []);
-      addActivity(`Loaded ${kind} review queue (${(response.data || []).length} items).`, "info");
+      const items = Array.isArray(response.data) ? response.data : [];
+      renderReviewQueueTable(items);
+      addActivity(`Loaded ${kind} review queue (${items.length} items).`, "info");
     });
   }
 
@@ -284,7 +290,7 @@
       if (state.profile.reviewerId.trim()) {
         payload.reviewer_id = state.profile.reviewerId.trim();
       }
-      const response = await apiRequest("review", `/v1/faxes/${jobId}/review/claim`, {
+      const response = await apiRequest("review", `/v1/faxes/${encId(jobId)}/review/claim`, {
         method: "POST",
         body: payload,
       });
@@ -296,7 +302,7 @@
 
   async function openReviewPacket(jobId, button) {
     await withButtonBusy(button, "Opening...", async () => {
-      const response = await apiRequest("review", `/v1/faxes/${jobId}/review-packet`, { method: "GET" });
+      const response = await apiRequest("review", `/v1/faxes/${encId(jobId)}/review-packet`, { method: "GET" });
       state.reviewPacket = response.data;
       renderReviewPacket(response.data);
       renderJson($("reviewOutput"), response.data);
@@ -354,6 +360,7 @@
                 data-field-key="${escapeAttr(field.field_key)}"
                 data-original-value="${escapeAttr(originalValue)}"
                 placeholder="Enter corrected value"
+                aria-label="Corrected value for ${escapeAttr(field.field_key)}"
               >
             </td>
           </tr>
@@ -385,9 +392,10 @@
         addIfTruthy(query, "payer_name", $("tplPayerFilter").value.trim());
         query.active_only = $("tplActiveOnly").value;
         const response = await apiRequest("review", "/v1/templates", { method: "GET", query });
-        renderTemplatesTable(response.data || []);
+        const templates = Array.isArray(response.data) ? response.data : [];
+        renderTemplatesTable(templates);
         renderJson($("templatesOutput"), response.data);
-        addActivity(`Loaded ${(response.data || []).length} templates.`, "info");
+        addActivity(`Loaded ${templates.length} templates.`, "info");
       }, $("templatesOutput"));
     });
 
@@ -403,7 +411,7 @@
         };
         const response = await apiRequest("review", "/v1/templates", { method: "POST", body: payload });
         renderJson($("templatesOutput"), response.data);
-        $("tplUpdateId").value = response.data.template_id || "";
+        $("tplUpdateId").value = (response.data && response.data.template_id) || "";
         addActivity(`Created template ${shortId(response.data.template_id)}.`, "info");
         toast("Template created.", "success");
       }, $("templatesOutput"));
@@ -420,7 +428,7 @@
         if ($("tplUpdateActive").value) {
           payload.is_active = $("tplUpdateActive").value === "true";
         }
-        const response = await apiRequest("review", `/v1/templates/${templateId}`, {
+        const response = await apiRequest("review", `/v1/templates/${encId(templateId)}`, {
           method: "PUT",
           body: payload,
         });
@@ -439,7 +447,7 @@
         return;
       }
       await withButtonBusy(event.currentTarget, "Deleting...", async () => {
-        await apiRequest("review", `/v1/templates/${templateId}`, { method: "DELETE" });
+        await apiRequest("review", `/v1/templates/${encId(templateId)}`, { method: "DELETE" });
         renderJson($("templatesOutput"), { deleted: templateId });
         toast("Template deleted.", "success");
       }, $("templatesOutput"));
@@ -455,18 +463,19 @@
           match_phash_threshold: Number($("verPhash").value),
           match_orb_min_matches: Number($("verOrb").value),
         };
-        const response = await apiRequest("review", `/v1/templates/${templateId}/versions`, {
+        const response = await apiRequest("review", `/v1/templates/${encId(templateId)}/versions`, {
           method: "POST",
           body: payload,
         });
         renderJson($("versionsOutput"), response.data);
-        $("sampleVersionId").value = response.data.template_version_id || "";
-        $("fieldVersionId").value = response.data.template_version_id || "";
-        $("listFieldsVersionId").value = response.data.template_version_id || "";
-        $("verActivateId").value = response.data.template_version_id || "";
-        $("verUpdateId").value = response.data.template_version_id || "";
-        $("testExtractVersionId").value = response.data.template_version_id || "";
-        addActivity(`Created version ${shortId(response.data.template_version_id)}.`, "info");
+        const vid = (response.data && response.data.template_version_id) || "";
+        $("sampleVersionId").value = vid;
+        $("fieldVersionId").value = vid;
+        $("listFieldsVersionId").value = vid;
+        $("verActivateId").value = vid;
+        $("verUpdateId").value = vid;
+        $("testExtractVersionId").value = vid;
+        addActivity(`Created version ${shortId(vid)}.`, "info");
       }, $("versionsOutput"));
     });
 
@@ -474,7 +483,7 @@
       event.preventDefault();
       await withButtonBusy(event.submitter, "Activating...", async () => {
         const versionId = $("verActivateId").value.trim();
-        const response = await apiRequest("review", `/v1/templates/versions/${versionId}/activate`, {
+        const response = await apiRequest("review", `/v1/templates/versions/${encId(versionId)}/activate`, {
           method: "POST",
         });
         renderJson($("versionsOutput"), response.data);
@@ -490,7 +499,7 @@
         addOptionalNumber(payload, "match_min_score", $("verUpdateMinScore").value);
         addOptionalNumber(payload, "match_phash_threshold", $("verUpdatePhash").value);
         addOptionalNumber(payload, "match_orb_min_matches", $("verUpdateOrb").value);
-        const response = await apiRequest("review", `/v1/templates/versions/${versionId}`, {
+        const response = await apiRequest("review", `/v1/templates/versions/${encId(versionId)}`, {
           method: "PUT",
           body: payload,
         });
@@ -507,7 +516,7 @@
         if (!file) throw new Error("Select a sample image.");
         const formData = new FormData();
         formData.append("file", file);
-        const response = await apiRequest("review", `/v1/templates/versions/${versionId}/samples`, {
+        const response = await apiRequest("review", `/v1/templates/versions/${encId(versionId)}/samples`, {
           method: "POST",
           formData,
         });
@@ -532,7 +541,7 @@
           validation_regex: $("fieldRegex").value.trim() || null,
           expected_type: $("fieldExpectedType").value.trim() || "text",
         };
-        const response = await apiRequest("review", `/v1/templates/versions/${versionId}/fields`, {
+        const response = await apiRequest("review", `/v1/templates/versions/${encId(versionId)}/fields`, {
           method: "POST",
           body: payload,
         });
@@ -545,10 +554,11 @@
       event.preventDefault();
       await withButtonBusy(event.submitter, "Loading...", async () => {
         const versionId = $("listFieldsVersionId").value.trim();
-        const response = await apiRequest("review", `/v1/templates/versions/${versionId}/fields`, {
+        const response = await apiRequest("review", `/v1/templates/versions/${encId(versionId)}/fields`, {
           method: "GET",
         });
-        renderTemplateFieldsTable(response.data || []);
+        const fields = Array.isArray(response.data) ? response.data : [];
+        renderTemplateFieldsTable(fields);
         renderJson($("fieldOpsOutput"), response.data);
       }, $("fieldOpsOutput"));
     });
@@ -579,7 +589,7 @@
         if (!file) throw new Error("Select an image.");
         const formData = new FormData();
         formData.append("file", file);
-        const response = await apiRequest("review", `/v1/templates/versions/${versionId}/test-extract`, {
+        const response = await apiRequest("review", `/v1/templates/versions/${encId(versionId)}/test-extract`, {
           method: "POST",
           formData,
         });
@@ -619,7 +629,8 @@
           method: "POST",
           body: payload,
         });
-        renderQueryResultsTable(response.data.results || []);
+        const queryData = response.data || {};
+        renderQueryResultsTable(queryData.results || []);
         renderJson($("queryOutput"), response.data);
       }, $("queryOutput"));
     });
@@ -700,10 +711,426 @@
       event.preventDefault();
       await withButtonBusy(event.submitter, "Promoting...", async () => {
         const modelVersionId = $("promoteModelId").value.trim();
-        const response = await apiRequest("review", `/v1/models/${modelVersionId}/promote`, {
+        const response = await apiRequest("review", `/v1/models/${encId(modelVersionId)}/promote`, {
           method: "POST",
           body: { promoted_by: state.profile.reviewerId || "admin" },
         });
         renderJson($("modelsOutput"), response.data);
       }, $("modelsOutput"));
     });
+
+    $("updateMetricsForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await withButtonBusy(event.submitter, "Updating...", async () => {
+        const modelVersionId = $("metricsModelId").value.trim();
+        const metrics = parseJsonText($("metricsJson").value.trim(), "Invalid metrics JSON.");
+        const response = await apiRequest("review", `/v1/models/${encId(modelVersionId)}/metrics`, {
+          method: "PUT",
+          body: { metrics },
+        });
+        renderJson($("modelsOutput"), response.data);
+      }, $("modelsOutput"));
+    });
+
+    $("deleteModelForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const modelVersionId = $("deleteModelId").value.trim();
+      if (!window.confirm(`Delete model version ${modelVersionId}?`)) {
+        return;
+      }
+      await withButtonBusy(event.submitter, "Deleting...", async () => {
+        await apiRequest("review", `/v1/models/${encId(modelVersionId)}`, {
+          method: "DELETE",
+        });
+        renderJson($("modelsOutput"), { deleted: modelVersionId });
+      }, $("modelsOutput"));
+    });
+  }
+
+  function bindApiConsole() {
+    $("apiService").addEventListener("change", () => {
+      const showCustom = $("apiService").value === "custom";
+      $("apiCustomBaseWrap").style.display = showCustom ? "flex" : "none";
+    });
+    $("apiService").dispatchEvent(new Event("change"));
+
+    $("apiConsoleForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await withButtonBusy(event.submitter, "Executing...", async () => {
+        const service = $("apiService").value;
+        const method = $("apiMethod").value;
+        const path = $("apiPath").value.trim();
+        const rawQuery = $("apiQueryString").value.trim();
+        const rawBody = $("apiBody").value.trim();
+        const query = parseQueryString(rawQuery);
+
+        let body = undefined;
+        if (rawBody && !["GET", "DELETE"].includes(method)) {
+          body = parseJsonText(rawBody, "Invalid API console JSON body.");
+        }
+
+        const options = {
+          method,
+          query,
+          body,
+        };
+
+        if (service === "custom") {
+          options.baseUrl = $("apiCustomBase").value.trim();
+          if (!options.baseUrl) {
+            throw new Error("Custom base URL is required when service is custom.");
+          }
+        }
+
+        const response = await apiRequest(service, path, options);
+        renderJson($("apiConsoleOutput"), {
+          status: response.status,
+          url: response.url,
+          data: response.data,
+        });
+      }, $("apiConsoleOutput"));
+    });
+  }
+
+  function renderJobsTable(jobs) {
+    $("jobsTableBody").innerHTML = jobs.map((job) => `
+      <tr>
+        <td><code>${escapeHtml(job.fax_job_id)}</code></td>
+        <td><span class="status-chip ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span></td>
+        <td>${escapeHtml(job.payer_hint || "-")}</td>
+        <td>${escapeHtml(job.doc_type || "-")}</td>
+        <td>${job.needs_review ? "true" : "false"}</td>
+        <td>${escapeHtml(job.created_at || "-")}</td>
+        <td><button class="btn subtle" type="button" data-job-id="${escapeAttr(job.fax_job_id)}" aria-label="Select job ${escapeAttr(shortId(job.fax_job_id))}">Select</button></td>
+      </tr>
+    `).join("");
+  }
+
+  function renderReviewQueueTable(items) {
+    $("reviewQueueBody").innerHTML = items.map((item) => `
+      <tr>
+        <td><code>${escapeHtml(item.fax_job_id)}</code></td>
+        <td>${escapeHtml(String(item.priority ?? "-"))}</td>
+        <td>${escapeHtml(item.claimed_by || "-")}</td>
+        <td>${escapeHtml((item.review_reasons || []).join(", ") || "-")}</td>
+        <td class="button-row">
+          <button class="btn subtle" type="button" data-review-action="open" data-job-id="${escapeAttr(item.fax_job_id)}" aria-label="Open review for ${escapeAttr(shortId(item.fax_job_id))}">Open</button>
+          <button class="btn ghost" type="button" data-review-action="claim" data-job-id="${escapeAttr(item.fax_job_id)}" aria-label="Claim review for ${escapeAttr(shortId(item.fax_job_id))}">Claim</button>
+          <button class="btn primary" type="button" data-review-action="claim-open" data-job-id="${escapeAttr(item.fax_job_id)}" aria-label="Claim and open review for ${escapeAttr(shortId(item.fax_job_id))}">Claim + Open</button>
+        </td>
+      </tr>
+    `).join("");
+  }
+
+  function renderTemplatesTable(templates) {
+    $("templatesBody").innerHTML = templates.map((template) => `
+      <tr>
+        <td><code>${escapeHtml(template.template_id)}</code></td>
+        <td>${escapeHtml(template.template_name)}</td>
+        <td>${escapeHtml(template.payer_name)}</td>
+        <td>${escapeHtml(template.doc_type)}</td>
+        <td>${template.is_active ? "true" : "false"}</td>
+      </tr>
+    `).join("");
+  }
+
+  function renderTemplateFieldsTable(fields) {
+    $("fieldsBody").innerHTML = fields.map((field) => `
+      <tr>
+        <td><code>${escapeHtml(field.field_key)}</code></td>
+        <td>${escapeHtml(field.field_label || "-")}</td>
+        <td>${escapeHtml(`(${field.roi_x0}, ${field.roi_y0}) - (${field.roi_x1}, ${field.roi_y1})`)}</td>
+        <td>${escapeHtml(String(field.target_page))}</td>
+        <td>${field.is_required ? "true" : "false"}</td>
+      </tr>
+    `).join("");
+  }
+
+  function renderQueryResultsTable(results) {
+    $("queryResultsBody").innerHTML = results.map((result) => `
+      <tr>
+        <td><code>${escapeHtml(result.fax_job_id || "-")}</code></td>
+        <td>${escapeHtml(result.field_key || "-")}</td>
+        <td>${escapeHtml(result.value || "-")}</td>
+        <td>${result.confidence === null || result.confidence === undefined ? "-" : escapeHtml(String(result.confidence))}</td>
+        <td>${result.similarity_score === null || result.similarity_score === undefined ? "-" : escapeHtml(String(result.similarity_score))}</td>
+      </tr>
+    `).join("");
+  }
+
+  async function apiRequest(service, path, options = {}) {
+    const method = options.method || "GET";
+    const baseUrl = options.baseUrl || getBaseUrlForService(service);
+    const serviceName = service === "custom" ? "custom" : service;
+    if (!baseUrl) {
+      throw withServiceName(new Error(`Missing base URL for service '${serviceName}'.`), serviceName);
+    }
+
+    const url = new URL(buildAbsoluteUrl(baseUrl, path));
+    if (options.query && typeof options.query === "object") {
+      for (const [key, value] of Object.entries(options.query)) {
+        if (value === undefined || value === null || value === "") continue;
+        url.searchParams.set(key, String(value));
+      }
+    }
+
+    const headers = new Headers(options.headers || {});
+    if (state.profile.token.trim()) {
+      headers.set("Authorization", `Bearer ${state.profile.token.trim()}`);
+    }
+
+    let body = undefined;
+    if (options.formData) {
+      body = options.formData;
+    } else if (options.body !== undefined) {
+      headers.set("Content-Type", "application/json");
+      body = JSON.stringify(options.body);
+    }
+
+    let response;
+    try {
+      response = await fetch(url.toString(), {
+        method,
+        headers,
+        body,
+      });
+    } catch (error) {
+      throw withServiceName(new Error(`Network error contacting ${serviceName}: ${error.message}`), serviceName);
+    }
+
+    const rawText = await response.text();
+    const parsed = tryParseJson(rawText);
+    const payload = parsed ?? rawText;
+
+    if (!response.ok) {
+      const message = extractErrorMessage(payload, response.status);
+      const err = new Error(message);
+      err.status = response.status;
+      err.payload = payload;
+      throw withServiceName(err, serviceName);
+    }
+
+    return {
+      status: response.status,
+      data: payload,
+      url: url.toString(),
+      serviceName,
+    };
+  }
+
+  function withServiceName(error, serviceName) {
+    error.serviceName = serviceName;
+    return error;
+  }
+
+  function buildAbsoluteUrl(baseUrl, path) {
+    const trimmedBase = String(baseUrl).trim().replace(/\/+$/, "");
+    const safePath = String(path || "").trim();
+    if (!safePath) return trimmedBase;
+    if (/^https?:\/\//i.test(safePath)) return safePath;
+    const normalizedPath = safePath.startsWith("/") ? safePath : `/${safePath}`;
+    return `${trimmedBase}${normalizedPath}`;
+  }
+
+  function getBaseUrlForService(service) {
+    if (service === "ingress") return state.profile.ingressBaseUrl.trim();
+    if (service === "review") return state.profile.reviewBaseUrl.trim();
+    if (service === "query") return state.profile.queryBaseUrl.trim();
+    if (service === "custom") return null;
+    throw new Error(`Unsupported service '${service}'`);
+  }
+
+  function tryParseJson(text) {
+    if (!text) return null;
+    try {
+      return JSON.parse(text);
+    } catch {
+      return null;
+    }
+  }
+
+  function parseJsonText(text, errorMessage) {
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error(errorMessage);
+    }
+  }
+
+  function extractErrorMessage(payload, fallbackStatus) {
+    if (payload && typeof payload === "object") {
+      if (typeof payload.detail === "string") return payload.detail;
+      if (typeof payload.message === "string") return payload.message;
+    }
+    if (typeof payload === "string" && payload.trim()) return payload;
+    return `Request failed with status ${fallbackStatus}`;
+  }
+
+  function appendIfPresent(formData, key, value) {
+    if (value) formData.append(key, value);
+  }
+
+  function addIfTruthy(target, key, value) {
+    if (value !== undefined && value !== null && value !== "") {
+      target[key] = value;
+    }
+  }
+
+  function addOptionalNumber(target, key, value) {
+    if (value === "" || value === null || value === undefined) return;
+    const number = Number(value);
+    if (Number.isNaN(number)) return;
+    target[key] = number;
+  }
+
+  function parseQueryString(raw) {
+    if (!raw) return {};
+    const params = new URLSearchParams(raw);
+    const result = {};
+    for (const [key, value] of params.entries()) {
+      result[key] = value;
+    }
+    return result;
+  }
+
+  function renderJson(element, value) {
+    if (!element) return;
+    element.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  }
+
+  function shortId(id) {
+    if (!id) return "n/a";
+    return String(id).slice(0, 8);
+  }
+
+  function encId(id) {
+    return encodeURIComponent(String(id));
+  }
+
+  function escapeHtml(value) {
+    return String(value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  function escapeAttr(value) {
+    return escapeHtml(value);
+  }
+
+  async function withButtonBusy(button, busyLabel, action, errorOutputElement) {
+    const btn = button || null;
+    const original = btn ? btn.textContent : "";
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = busyLabel;
+    }
+    try {
+      return await action();
+    } catch (error) {
+      const details = formatError(error);
+      if (errorOutputElement) {
+        renderJson(errorOutputElement, details);
+      }
+      addActivity(details.message, "error");
+      toast(details.message, "error");
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    }
+  }
+
+  function formatError(error) {
+    const details = {
+      message: error.message || "Unexpected error",
+      status: error.status || null,
+      service: error.serviceName || null,
+      payload: error.payload || null,
+    };
+    if (details.service && details.status) {
+      details.message = `[${details.service}] ${details.message} (HTTP ${details.status})`;
+    } else if (details.service) {
+      details.message = `[${details.service}] ${details.message}`;
+    }
+    return details;
+  }
+
+  function toast(message, kind) {
+    const host = $("toastHost");
+    const node = document.createElement("div");
+    node.className = `toast ${kind || "info"}`;
+    node.textContent = message;
+    host.appendChild(node);
+    const duration = kind === "error" ? 7000 : 3600;
+    window.setTimeout(() => {
+      node.remove();
+    }, duration);
+  }
+
+  function addActivity(message, kind) {
+    const feed = $("activityFeed");
+    const item = document.createElement("li");
+    item.className = kind || "info";
+    item.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+    feed.prepend(item);
+    while (feed.children.length > 16) {
+      feed.removeChild(feed.lastChild);
+    }
+  }
+
+  function hydrateProfile() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) {
+        state.profile = { ...DEFAULT_PROFILE };
+        return;
+      }
+      const parsed = JSON.parse(raw);
+      state.profile = {
+        ...DEFAULT_PROFILE,
+        ...parsed,
+      };
+    } catch {
+      state.profile = { ...DEFAULT_PROFILE };
+    }
+  }
+
+  function persistProfile() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.profile));
+    } catch {
+      // localStorage unavailable (private browsing, quota exceeded, etc.)
+    }
+  }
+
+  function applyProfileToInputs() {
+    $("cfgIngress").value = state.profile.ingressBaseUrl;
+    $("cfgReview").value = state.profile.reviewBaseUrl;
+    $("cfgQuery").value = state.profile.queryBaseUrl;
+    $("cfgToken").value = state.profile.token;
+    $("cfgReviewer").value = state.profile.reviewerId;
+    syncStatusPills();
+  }
+
+  function saveProfileFromInputs() {
+    state.profile.ingressBaseUrl = $("cfgIngress").value.trim() || DEFAULT_PROFILE.ingressBaseUrl;
+    state.profile.reviewBaseUrl = $("cfgReview").value.trim() || DEFAULT_PROFILE.reviewBaseUrl;
+    state.profile.queryBaseUrl = $("cfgQuery").value.trim() || DEFAULT_PROFILE.queryBaseUrl;
+    state.profile.token = $("cfgToken").value.trim();
+    state.profile.reviewerId = $("cfgReviewer").value.trim();
+    persistProfile();
+    syncStatusPills();
+  }
+
+  function syncStatusPills() {
+    const usingToken = Boolean(state.profile.token && state.profile.token.trim());
+    $("authPill").textContent = usingToken ? "Auth: Bearer token configured" : "Auth: Optional in development";
+    $("envPill").textContent = `Review Host: ${state.profile.reviewBaseUrl || DEFAULT_PROFILE.reviewBaseUrl}`;
+  }
+
+  window.addEventListener("DOMContentLoaded", init);
+})();
