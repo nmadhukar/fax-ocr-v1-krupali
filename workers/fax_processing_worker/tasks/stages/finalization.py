@@ -13,7 +13,7 @@ from typing import Any
 
 from libs.shared.clients.prior_auth_client import PriorAuthClient
 from libs.shared.clients.task_client import TaskClient
-from libs.shared.db.models.enums import FaxJobStatusEnum
+from libs.shared.db.models.enums import ExtractionMethodEnum, FaxJobStatusEnum
 from libs.shared.db.models.fax_review import FaxReview
 from libs.shared.db.repositories.extraction_repo import ExtractionRepository
 from libs.shared.extraction.hitl import compute_field_flags
@@ -44,6 +44,32 @@ def store_extraction(ctx: PipelineContext) -> None:
         model_versions=model_versions,
         pipeline_version="3.0.0",
     )
+
+    # Keep fax_extracted_field synchronized with final post-processed values.
+    # This avoids stale candidate rows (from pre-correction stages) leaking
+    # into query/search endpoints that read from fax_extracted_field.
+    ctx.field_repo.delete_by_job(ctx.job_uuid)
+    for field_key, field_data in (ctx.extracted_fields or {}).items():
+        if not isinstance(field_data, dict):
+            continue
+
+        method_raw = (field_data.get("method") or "").strip().upper()
+        try:
+            method_enum = ExtractionMethodEnum(method_raw)
+        except Exception:
+            method_enum = ExtractionMethodEnum.TEMPLATE_OCR
+
+        field = ctx.field_repo.upsert_field(
+            fax_job_id=ctx.job_uuid,
+            field_key=field_key,
+            method=method_enum,
+            field_value=field_data.get("value"),
+            field_conf=float(field_data.get("confidence")) if field_data.get("confidence") is not None else None,
+            evidence_bbox=field_data.get("evidence_bbox"),
+            evidence_text=field_data.get("evidence_text"),
+        )
+        field.validation_passed = field_data.get("validation_passed")
+        field.validation_errors = field_data.get("validation_errors") or []
 
 
 def hitl_flagging(ctx: PipelineContext) -> None:
