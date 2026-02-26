@@ -200,18 +200,40 @@ def _decision_from_doc_type(ctx: PipelineContext) -> str | None:
     return None
 
 
+def _decision_from_filename(ctx: PipelineContext) -> str | None:
+    """Weak fallback using filename keywords when other signals are absent."""
+    filename = getattr(getattr(ctx, "job", None), "original_filename", "") or ""
+    lower = filename.lower()
+    has_approved = "approv" in lower
+    has_denied = "deni" in lower or "adverse" in lower
+    if has_approved and not has_denied:
+        return "APPROVED"
+    if has_denied and not has_approved:
+        return "DENIED"
+    return None
+
+
 def _normalize_decision_field(ctx: PipelineContext) -> None:
     """Ensure decision field is canonical enum text."""
     fields = ctx.extracted_fields
     decision_data = fields.get("decision") or {}
     current_value = (decision_data.get("value") or "").strip()
 
+    canonical_source = "text"
     canonical = _decision_from_text(current_value)
     if not canonical:
         canonical = _decision_from_doc_type(ctx)
+        if canonical:
+            canonical_source = "doc_type"
+    if not canonical:
+        canonical = _decision_from_filename(ctx)
+        if canonical:
+            canonical_source = "filename"
     if not canonical:
         scan_ocr = ctx.full_doc_ocr_text or ctx.all_ocr_text or ""
         canonical = _infer_decision_from_ocr(scan_ocr)
+        if canonical:
+            canonical_source = "ocr"
 
     if not canonical:
         if current_value:
@@ -220,12 +242,17 @@ def _normalize_decision_field(ctx: PipelineContext) -> None:
         return
 
     if not decision_data:
+        inferred_conf = 0.80
+        if canonical_source == "filename":
+            inferred_conf = 0.60
+        elif canonical_source == "ocr":
+            inferred_conf = 0.70
         fields["decision"] = {
             "value": canonical,
-            "confidence": 0.80,
+            "confidence": inferred_conf,
             "method": ExtractionMethodEnum.TEMPLATE_OCR.value,
             "evidence_bbox": None,
-            "evidence_text": f"Inferred decision={canonical}",
+            "evidence_text": f"Inferred decision={canonical} source={canonical_source}",
             "candidates": [],
         }
         return
@@ -285,6 +312,20 @@ def _normalize_provider_name_value(value: str) -> str:
     if not tokens:
         return candidate
 
+    # Drop trailing OCR code tails (e.g., "... LLCODMHAS0245051LABOTP").
+    while tokens:
+        tail = re.sub(r"[^A-Za-z0-9]", "", tokens[-1])
+        if not tail:
+            tokens.pop()
+            continue
+        has_digit = any(c.isdigit() for c in tail)
+        long_mixed = has_digit and len(tail) >= 8
+        dense_digits = sum(1 for c in tail if c.isdigit()) >= 3
+        if long_mixed or dense_digits:
+            tokens.pop()
+            continue
+        break
+
     suffixes = {"llc", "inc", "corp", "corporation", "ltd", "pllc", "pc", "llp"}
     for idx, token in enumerate(tokens):
         norm = re.sub(r"[^a-z]", "", token.lower())
@@ -314,6 +355,15 @@ def _is_reasonable_provider_name(value: str) -> bool:
     if compact:
         digit_ratio = sum(1 for c in compact if c.isdigit()) / len(compact)
         if digit_ratio > 0.20:
+            return False
+    tokens = candidate.split()
+    for token in tokens:
+        norm = re.sub(r"[^A-Za-z0-9]", "", token)
+        if not norm:
+            continue
+        if sum(1 for c in norm if c.isdigit()) >= 3:
+            return False
+        if any(c.isdigit() for c in norm) and len(norm) >= 8:
             return False
     if candidate.count(":") > 1:
         return False
@@ -381,6 +431,27 @@ def _clean_patient_name_candidate(raw: str) -> str:
     if stop_m:
         candidate = candidate[: stop_m.start()].strip(" ,.;:-")
     candidate = re.sub(r"\s*,\s*", ", ", candidate)
+    candidate = candidate.strip(" ,.;:-")
+
+    if "," in candidate:
+        parts = [p.strip() for p in candidate.split(",", 1)]
+        if len(parts) == 2 and parts[0] and parts[1]:
+            last = parts[0].title()
+            first = parts[1]
+            if first.isupper() and len(first) >= 5:
+                first = f"{first[:-1].title()} {first[-1].upper()}"
+            else:
+                first = first.title()
+            candidate = f"{last}, {first}"
+    else:
+        words = []
+        for w in candidate.split():
+            if len(w) == 1:
+                words.append(w.upper())
+            else:
+                words.append(w.title())
+        candidate = " ".join(words)
+
     return candidate.strip(" ,.;:-")
 
 
